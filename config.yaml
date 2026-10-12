@@ -1,0 +1,31 @@
+# Knowledge Base Plugin Config
+# P0: 基础配置
+data_dir: "/root/.hermes/kb-data"
+audit_log: "/root/.hermes/logs/knowledge-base-ingest.jsonl"
+audit_archive_dir: "/root/.hermes/logs/kb-audit-archive"
+
+# P0: 长度门
+length_gate:
+  title_min: 5
+  title_max: 200
+  content_min: 20
+  content_max: 10000
+
+# P0: BM25 近重复阈值
+dedup:
+  bm25_strict: 0.85  # ≥0.85 拒/合
+  bm25_warn: 0.60    # 0.60-0.85 记审计不拦
+
+# P2: 宿主模型 Rerank 配置（当前禁用，P2 启用）
+llm:
+  rerank:
+    enabled: false  # P0 阶段关闭
+    timeout_seconds: 3
+    max_retries: 1
+    fallback: "bm25_original"  # 降级策略
+
+# P0: Audit log 轮转
+audit_rotation:
+  max_size_mb: 10
+  archive_format: "gzip"
+  retention_days: 30
