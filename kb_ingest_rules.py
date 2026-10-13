@@ -62,6 +62,60 @@ TOPIC_VOCAB: tuple = (
 # ---------------------------------------------------------------------------
 _TRIVIAL_KEEP_RE = re.compile(r"[^\w\u4e00-\u9fff]")
 
+# ---------------------------------------------------------------------------
+# Write-side noise-title filter (owner 2026-10-13: noise candidates MUST NOT
+# reach the injection faces — clarify footnote / read-side auto-inject — while
+# their staging rows stay on disk for audit). A candidate whose TITLE is a
+# bare user command / question head (the "推 / 要 / A / 那就帮我加 / 不要，直接丢"
+# shape the detector packages together with an assistant 流水账 tail) is
+# noise: the command itself is not knowledge. Conservative — only obvious
+# command/question heads are filtered; any real task/verdict/config snippet
+# slips through (宁漏勿进).
+# ---------------------------------------------------------------------------
+_NOISE_CMD_WORDS = {
+    # 带语义的指令 / 选项 / 确认短词（宁漏勿进：只列高置信指令词，
+    # 孤立单字母 a/b/c/A/B 不入表——太易误伤占位/真内容）。
+    "推", "要", "删", "丢", "修", "加", "删掉", "推完了", "落地",
+    "继续", "确认", "同意", "可以", "好的", "好", "行", "对", "嗯", "收到",
+    "明白", "否", "不", "别", "算了", "不要", "帮我加", "那就帮我加",
+    "可以落地", "点头", "批准", "skip", "skip it", "skip that", "run it",
+}
+_NOISE_Q_MARKERS = ("吗", "呢", "?", "？", "吧")
+
+
+def is_noise_title(title: str) -> bool:
+    """True iff `title` is a bare user command / question head (noise).
+
+    Two legs, both conservative (fail-open: only filter when clearly noise):
+      1. command head: after strip, the title (first line) is a single
+         instruction word from _NOISE_CMD_WORDS, OR a 1-6 char imperative
+         ending in a command verb (帮我/把/别/要 + short verb) with no
+         substantive noun payload;
+      2. question head: ends in a question marker (吗/呢/？/…) AND the
+         content token count is small (< 8) — a short question, not a
+         settled answer.
+    A real knowledge snippet ("推 stennyc/KBS 前先用 Bearer 认证" / "读侧
+    裸 import 崩溃，bootstrap 修复") has substantive payload and returns
+    False. Pure function, zero I/O."""
+    s = (title or "").strip().splitlines()[0].strip() if title else ""
+    if not s:
+        return True
+    low = s.lower()
+    # Leg 1: bare command word
+    if s in _NOISE_CMD_WORDS or low in _NOISE_CMD_WORDS:
+        return True
+    # Leg 2: 1-6 char imperative with no CJK noun payload beyond the verb
+    #         (a real task always carries a substantive object / verb chain
+    #         that pushes length up; "推"/"那就帮我加" stay short).
+    if 1 <= len(s) <= 6 and low in _NOISE_CMD_WORDS | {"那就帮我加", "帮我加", "不要", "别", "算了"}:
+        return True
+    # Leg 3: short question head
+    if s.endswith(_NOISE_Q_MARKERS) and len(s) <= 16:
+        content = _TRIVIAL_KEEP_RE.sub("", s)
+        if len(content) < 8:
+            return True
+    return False
+
 
 def is_trivial_query(text: str) -> bool:
     """True iff `text` is too thin to be worth a knowledge-base search.
@@ -252,6 +306,15 @@ class Candidate:
     # Backward-compatible: existing callers that don't pass origin_kind get
     # None, which the write-side hook treats as "legacy auto" (no change).
     origin_kind: Optional[str] = None
+    # PRD v2-final TR-1 (note 3): project repo reference — a controlled
+    # vocabulary of git remote names ("repo:stennyc/KBS" etc.). Set by the
+    # write-side repo-context capture (kb_ingest_hook._WriteSideState._repo_ctx,
+    # on_turn fail-soft) and carried through the Candidate so
+    # _build_agent_doc can stamp it on the doc dict. None (default) keeps
+    # every existing caller byte-identical (the origin_kind backward-compat
+    # precedent); a None project_ref means the doc never upgrades to the
+    # archive tier (git unavailable -> experience/transcript routing).
+    project_ref: Optional[str] = None
 
 
 class CandidateDetector:

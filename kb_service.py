@@ -41,6 +41,7 @@ import json
 import logging
 import os
 import pickle
+import re
 import time
 import uuid
 from pathlib import Path
@@ -143,9 +144,22 @@ def _deterministic_docid(doc: dict) -> str:
     content maps to the same id in every process, so cross-process dedup
     keeps working, re-ingest is idempotent, and a layer position number
     (the old ``str(d.get("docid", i))`` fallback) never leaks into
-    identity — that leak broke the external-docid dedup contract #15."""
+    identity — that leak broke the external-docid dedup contract #15.
+
+    B1 None-filter (PRD v2-final, owner ruling): the payload also drops
+    every None-VALUED key — ``k != "docid" and v is not None``. A
+    setdefault-stamped ``gov_tier=None`` / ``project_ref=None`` key must
+    not pollute the docid: ``null`` in the JSON payload used to change
+    the uuid5 for docs that only differ by None-valued keys, so a
+    re-ingest of the SAME content minted a NEW docid and left the old
+    row behind (the double-row bug the set_premise_status comment
+    guards against). After the filter, ``key present with None`` and
+    ``key physically absent`` map to the same docid — the unified
+    "None ≡ key absent" semantics (the filter face's ``__unset__``
+    sentinel, see search(), is the same ruling on the read side)."""
     payload = json.dumps(
-        {k: v for k, v in sorted(doc.items()) if k != "docid"},
+        {k: v for k, v in sorted(doc.items())
+         if k != "docid" and v is not None},
         ensure_ascii=False, default=str,
     )
     return str(uuid.uuid5(uuid.NAMESPACE_OID, payload))
@@ -195,6 +209,15 @@ def _normalize_docs(docs: list[dict]) -> list[dict]:
         #   of the metadata payload.
         d.setdefault("topic", "general")
         d.setdefault("premise_status", True)
+        # PRD v2-final gov_tier (three-tier governance, B1 setdefault
+        # extension point): a NEW controlled enum field, defaulted to
+        # None here ONLY when absent (the premise_status setdefault
+        # precedent). Because the B1 None-filter keeps None-valued keys
+        # OUT of the docid payload, the setdefault is docid-stable for
+        # legacy docs — gov_tier=None (absent) and gov_tier absent both
+        # hash to the same payload. Supplied non-None values stay in
+        # the payload (experience/archive are docid-meaningful).
+        d.setdefault("gov_tier", None)
         out.append(d)
     return out
 
@@ -626,6 +649,74 @@ class KbSearchService:
             moved["status"] = "confirmed"
             moved["confirmed_by"] = confirmed_by
             moved.setdefault("origin_kind", "auto")
+            # B2 metadata-aware dedup (PRD v2-final, revised.2 option b):
+            # BEFORE the corpus move, when the moving row carries a
+            # gov_tier, scan the CONFIRMED corpus (hot + cold snapshots)
+            # for a doc with the SAME title+content but a DIFFERENT
+            # gov_tier (N1 scale posture: compare the gov_tier value
+            # only — the skip_near_dup "don't re-run the full
+            # token-containment scan" idea applied to the tier axis;
+            # title+content identity is exact-match, no tokenize).
+            # On a hit the tier is in CONFLICT: the doc is NOT moved
+            # into the confirmed corpus (no auto-confirm of a tier the
+            # owner already ruled differently). Instead the row is
+            # DOWNGRADED to a plain PENDING candidate — gov_tier is
+            # cleared (so an owner re-confirm does not re-collide) and
+            # the _suspected_tier_conflict mark rides along — re-added
+            # to staging, audited (tier_conflict), and returned with
+            # note=tier_conflict. The caller (write-side hook) re-fires
+            # the session's clarify channel for the moved-out doc id so
+            # the footnote surfaces it to the owner; the owner confirms
+            # through the EXISTING knowledge_base_confirm face (a
+            # non-agent confirmed_by is the explicit re-confirm — no new
+            # tool surface, no confirm signature change; skipping leaves
+            # the row PENDING for audit). A stale-staging TTL sweep
+            # (note 4) is the terminal backstop against unbounded
+            # growth of blocked rows.
+            tier = moved.get("gov_tier")
+            if tier:
+                conflict_doc = None
+                for layer in (self._hot, self._cold):
+                    for d in layer.docs_snapshot():
+                        if (str(d.get("title") or "") == str(moved.get("title") or "")
+                                and str(d.get("content") or "") == str(moved.get("content") or "")
+                                and d.get("gov_tier") not in (None, tier)):
+                            conflict_doc = d
+                            break
+                    if conflict_doc:
+                        break
+                if conflict_doc is not None:
+                    # Downgrade: re-stage the row as a plain PENDING
+                    # candidate (status back to pending, gov_tier
+                    # cleared, conflict mark set), keep it in the
+                    # staging store (the move-out already happened via
+                    # remove(); re-adding restores it), audit + return
+                    # the conflict note to the caller.
+                    downgraded = {k: v for k, v in moved.items()
+                                  if k not in ("status", "confirmed_by",
+                                                "gov_tier")}
+                    downgraded["status"] = "pending"
+                    downgraded["gov_tier"] = None
+                    downgraded["_suspected_tier_conflict"] = True
+                    downgraded["_tier_conflict_against"] = (
+                        str(conflict_doc.get("docid")))
+                    self._staging.add(downgraded)
+                    self._staging.persist()
+                    self._flush()
+                    self._audit(action="confirm", doc_id=doc_id,
+                                source_profile=stored_profile,
+                                confirmed_by=confirmed_by,
+                                error="tier_conflict",
+                                against_doc=str(conflict_doc.get("docid")),
+                                gov_tier=tier)
+                    logger.info("confirm doc_id=%s tier_conflict "
+                                "against=%s; downgraded to plain "
+                                "PENDING + clarify", doc_id,
+                                conflict_doc.get("docid"))
+                    return {"status": "success", "doc_id": doc_id,
+                            "confirmed_by": confirmed_by,
+                            "source_profile": stored_profile,
+                            "note": "tier_conflict"}
             self._backend.update([moved])
             self._flush()
             self._staging.persist()
@@ -984,7 +1075,14 @@ class KbSearchService:
         """Return the PRD §13.2 structured payload.
 
         ``filters`` (optional) is a dict of metadata keys that a result must
-        match exactly (e.g. ``{"doc_type": "guide"}``).
+        match exactly (e.g. ``{"doc_type": "guide"}`). TR-4 sentinel (PRD
+        v2-final note 2, semantic unification with the B1 docid face): the
+        value ``"__unset__"`` means "key physically absent OR key present
+        with None" (the unified "None ≡ key absent" ruling — the same
+        semantics the B1 None-filter gives the docid face). Every OTHER
+        filter value keeps the exact-equality ``metadata.get(k) == v``
+        semantics, including a literal None value (mechanical equality;
+        the PRD mandates the sentinel string, not None, for "unset").
 
         ``min_score`` (optional, default 0.0) is a lower-bound threshold on
         the relevance score; results with ``score < min_score`` are excluded
@@ -1146,8 +1244,12 @@ class KbSearchService:
         for r in results:
             if r.score < min_score:
                 continue
+            meta = r.metadata or {}
             if filters and not all(
-                    (r.metadata or {}).get(k) == v for k, v in filters.items()):
+                    (k not in meta or meta.get(k) is None
+                     if v == "__unset__"
+                     else meta.get(k) == v)
+                    for k, v in filters.items()):
                 continue
             payload.append({
                 "doc_id": r.doc_id,
@@ -1559,6 +1661,90 @@ def _anchor_hit(doc: Dict[str, Any], followup_text: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# B4 independent anchor-point extraction (PRD v2-final TR-5 / revised.3
+# N2): four regex classes run over the RAW content, INDEPENDENT of any
+# LLM face — this is the anchor source that stays live when the LLM
+# distill fails (the v1 gap: LLM-only anchors meant an LLM fail dropped
+# every anchor and fail-open-archived a transcript).
+#
+#  Class                     pattern (case-insensitive, word-bounded)
+#  commit hash              \b[0-9a-f]{7,40}\b  (7-40 hex chars)
+#  abs file path            /abs POSIX or Windows drive-letter paths
+#                            with at least one more segment
+#  version number           semantic x.y[.z] (x.y also matches)
+#  service+config key       word.word / word:word dotted/coloned keys
+#                            (2+ segments, >= 3 chars total)
+#
+# extract_anchor_points() returns the deduped hit list in a fixed
+# class order (commit, path, version, service-key); union_anchor_points()
+# adds the LLM-output anchors AFTER the regex hits (independent regex
+# anchors > LLM anchors; union, not replacement — "LLM fail 时锚点全丢→
+# 该归档的没归档" is exactly what the union prevents).
+# ---------------------------------------------------------------------------
+
+_ANCHOR_RE = {
+    "commit": re.compile(r"\b[0-9a-f]{7,40}\b"),
+    "version": re.compile(r"\b\d+\.\d+(?:\.\d+)?\b"),
+    "service_key": re.compile(
+        r"\b[A-Za-z][A-Za-z0-9_-]*(?:[.:][A-Za-z0-9_-]+){1,}\b"),
+}
+# The POSIX/Windows abs-path pattern (built separately so the {7,40}
+# hex-class regex above stays a clean commit-hash shape): a leading
+# "/" or "C:\" followed by at least two path segments.
+_ANCHOR_ABS_PATH_RE = re.compile(
+    r"(?:/(?:[\w.-]+/)*[\w.-]+|[A-Za-z]:\\(?:[\w.-]+\\)*[\w.-]+)")
+
+
+def extract_anchor_points(raw_text: str) -> List[str]:
+    """B4 step ①: independent 4-class anchor extraction (zero LLM).
+
+    Returns the de-duplicated list of anchor strings (class order:
+    commit, abs_path, version, service_key; within a class, first-hit
+    order). Empty for pure prose — that empty result is exactly the
+    step ③ signal (LLM fail + no anchors = transcript drop, N2).
+    """
+    if not raw_text:
+        return []
+    out: List[str] = []
+    seen: set = set()
+
+    def _add(m):
+        v = m.group(0)
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+
+    for m in _ANCHOR_RE["commit"].finditer(raw_text):
+        _add(m)
+    for m in _ANCHOR_ABS_PATH_RE.finditer(raw_text):
+        _add(m)
+    for m in _ANCHOR_RE["version"].finditer(raw_text):
+        _add(m)
+    for m in _ANCHOR_RE["service_key"].finditer(raw_text):
+        _add(m)
+    return out
+
+
+def union_anchor_points(raw_text: str,
+                        llm_anchors: Optional[List[str]]) -> List[str]:
+    """anchor_points = independent regex hits ∪ LLM-output anchors.
+
+    Regex hits come FIRST (they are the source of truth — LLM fail
+    leaves only these); LLM-only extras are appended after, deduped
+    case-insensitively. `llm_anchors` may be None (LLM never ran) —
+    the union then equals the regex hit list.
+    """
+    base = list(extract_anchor_points(raw_text))
+    seen = {a.lower() for a in base}
+    for a in (llm_anchors or []):
+        a = str(a or "").strip()
+        if a and a.lower() not in seen:
+            seen.add(a.lower())
+            base.append(a)
+    return base
+
+
 def render(payload: dict) -> str:
     """Serialize the service payload to the JSON string a tool returns."""
     return json.dumps(payload, ensure_ascii=False)
@@ -1592,4 +1778,5 @@ def configure_logging(log_path: str, level: int = logging.INFO) -> None:
     lg.addHandler(handler)
 
 
-__all__ = ["KbSearchService", "render", "configure_logging"]
+__all__ = ["KbSearchService", "render", "configure_logging",
+           "extract_anchor_points", "union_anchor_points"]

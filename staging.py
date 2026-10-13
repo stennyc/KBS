@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +34,16 @@ from search_backend import SCHEMA_VERSION, SearchBackendError
 # in the repo (a symlinked repo update must not touch live pending data).
 _STAGING_DOCS = "staging_docs.jsonl"
 _STAGING_INDEX = "staging_index.pkl"
+
+# note 4 (PRD v2-final): TTL sweep threshold — a pending staging row
+# with no user interaction for more than 30 days is re-keyed to the
+# stale_staging state (audit-only, excluded from the active clarify
+# batch + confirm surface). The 30-day clock is anchored on the row's
+# first-seen ingest_ts (the deterministic first-seen ts the ReinforceStore
+# sidecar tracks for confirmed docs; a pending row without an ingest_ts
+# falls back to the row's last-modified mtime — a row that is never
+# interacted with keeps its original ts, the fail-soft posture).
+_STALE_STAGING_TTL_DAYS = 30
 
 
 class StagingStore:
@@ -131,21 +142,6 @@ class StagingStore:
 
     # ---- write / remove (caller holds the data-dir EX lock) ---------------
 
-    def add(self, doc: dict) -> int:
-        """Register a pending doc. Caller must have stamped ``docid`` + the
-        governance fields (status/origin_kind/source_profile) before calling.
-        Idempotent on docid: re-adding the same docid replaces the row in
-        place (content-addressed identity, same as the hot layer)."""
-        docid = str(doc.get("docid", ""))
-        if not docid:
-            raise SearchBackendError("staging add: doc is missing a docid")
-        self._docs = [d for d in self._docs if str(d.get("docid", "")) != docid]
-        self._docs.append(dict(doc))
-        self._index.replace(self._docs, self._index.generation + 1)
-        self._generation = self._index.generation
-        self.persist()
-        return self._generation
-
     def remove(self, doc_id: str) -> Optional[dict]:
         """Atomically drop a pending row by docid (the confirm move-out half).
 
@@ -185,5 +181,103 @@ class StagingStore:
         self._index.replace(self._docs, generation)
         self._generation = generation
 
+    # ---- note 4: TTL sweep to stale_staging -------------------------------
+
+    def find_active(self, doc_id: str) -> Optional[dict]:
+        """The ACTIVE (confirmable / clarify-eligible) row with this doc_id.
+
+        ``find`` returns any row (including a re-keyed stale_staging
+        audit copy); ``find_active`` excludes rows whose status is
+        ``stale_staging`` — the active surface is what the clarify
+        batch + confirm() move-out half operate on, so a stale row is
+        invisible to both (留审计: the row still exists in the store,
+        just not on the active face).
+        """
+        for d in self._docs:
+            if str(d.get("docid", "")) == str(doc_id):
+                if str(d.get("status", "pending")) == "stale_staging":
+                    return None
+                return d
+        return None
+
+    def sweep_stale(self, now_ts: Optional[float] = None) -> list[dict]:
+        """note 4 (PRD v2-final): re-key idle PENDING rows to
+        ``stale_staging``.
+
+        A row that has been PENDING with no user interaction for more
+        than ``_STALE_STAGING_TTL_DAYS`` (30) days is moved to the
+        ``stale_staging`` state: it is EXCLUDED from the active clarify
+        batch + confirm surface (see ``find_active``) but KEPT in the
+        row store for audit (the B2 tier-conflict blocked rows and the
+        B4 transcript-drop rows are the two producers of long-idle
+        pending rows; this sweep is the terminal backstop against
+        unbounded growth — the owner's Phase D ruling).
+
+        The idle clock is anchored on the row's first-seen
+        ``ingest_ts`` when present, else the row's ``_staged_at``
+        (stamped here on first add), else now (unknown age -> not
+        swept, the fail-soft posture).
+
+        Idempotent: a second sweep finds no PENDING rows to move.
+
+        Returns the list of swept (re-keyed) rows, or [] when nothing
+        was idle long enough.
+        """
+        if now_ts is None:
+            now_ts = time.time()
+        cutoff = now_ts - _STALE_STAGING_TTL_DAYS * 86400.0
+        swept: list[dict] = []
+        changed = False
+        for d in self._docs:
+            if str(d.get("status", "pending")) != "pending":
+                continue
+            ts = d.get("ingest_ts")
+            if ts is None:
+                ts = d.get("_staged_at")
+            if ts is None:
+                # Unknown age: not swept (fail-soft — a row without any
+                # interaction ts stays PENDING; the clarify backstop
+                # still surfaces it).
+                continue
+            try:
+                ts = float(ts)
+            except (TypeError, ValueError):
+                continue
+            if ts < cutoff:
+                d["status"] = "stale_staging"
+                swept.append(dict(d))
+                changed = True
+        if changed:
+            self._index.replace(self._docs, self._index.generation + 1)
+            self._generation = self._index.generation
+            self.persist()
+        return swept
+
+    def add(self, doc: dict) -> int:
+        """Register a pending doc. Caller must have stamped ``docid`` + the
+        governance fields (status/origin_kind/source_profile) before calling.
+        Idempotent on docid: re-adding the same docid replaces the row in
+        place (content-addressed identity, same as the hot layer).
+
+        note 4: stamps ``_staged_at`` (first-seen wall ts) so the TTL
+        sweep has an idle anchor even when the row never carries an
+        ``ingest_ts`` (a pending row that is re-added later KEEPS its
+        original ``_staged_at`` — the clock does not reset on re-stage)."""
+        docid = str(doc.get("docid", ""))
+        if not docid:
+            raise SearchBackendError("staging add: doc is missing a docid")
+        # Keep the original _staged_at across re-adds (idempotent clock).
+        existing = self.find(docid)
+        new_doc = dict(doc)
+        if existing and existing.get("_staged_at") is not None:
+            new_doc["_staged_at"] = existing["_staged_at"]
+        elif new_doc.get("_staged_at") is None:
+            new_doc["_staged_at"] = time.time()
+        self._docs = [d for d in self._docs if str(d.get("docid", "")) != docid]
+        self._docs.append(new_doc)
+        self._index.replace(self._docs, self._index.generation + 1)
+        self._generation = self._index.generation
+        self.persist()
+        return self._generation
 
 __all__ = ["StagingStore"]

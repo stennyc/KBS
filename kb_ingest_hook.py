@@ -39,6 +39,7 @@ import contextlib
 import json
 import logging
 import re
+import subprocess
 import time as _time
 from typing import Any, Dict, Optional
 
@@ -54,14 +55,14 @@ def _time_utcnow() -> str:
 try:
     from .kb_ingest_rules import (
         Candidate, CandidateDetector, ClarifyAggregator, dry_run_log,
-        is_trivial_query, merge_rules,
+        is_trivial_query, merge_rules, is_noise_title,
     )
     from .kb_distill import distill_content as _distill_content
     from .kb_distill import LLM_CALL_TIMEOUT as _LLM_JUDGE_TIMEOUT
 except ImportError:
     from kb_ingest_rules import (
         Candidate, CandidateDetector, ClarifyAggregator, dry_run_log,
-        is_trivial_query, merge_rules,
+        is_trivial_query, merge_rules, is_noise_title,
     )
     from kb_distill import distill_content as _distill_content
     from kb_distill import LLM_CALL_TIMEOUT as _LLM_JUDGE_TIMEOUT
@@ -248,6 +249,38 @@ def _llm_judge_candidate(main_runtime, text: str,
     return upgraded
 
 
+def _capture_repo_ctx() -> dict:
+    """PRD v2-final TR-1 (note 3): capture the git repo context for the
+    write-side turn loop.
+
+    Runs ``git toplevel`` + ``git remote get-url origin`` in the CURRENT
+    working directory (fail-soft end to end): git unavailable / not in a
+    work tree / no origin remote -> ``{"project_ref": None,
+    "git_available": False}`` -> the candidate routes to experience or
+    transcript, NEVER to archive (owner ruling: git 不可用 → 不升 archive).
+    The project_ref value is the controlled vocabulary form
+    ``repo:<remote-url>`` — the remote URL is the stable repo identity.
+
+    Cost posture: called ONCE per session (the _repo_ctx cache in
+    _WriteSideState), not per turn; a 2-second subprocess ceiling so a
+    hung git can never stall the post_llm_call turn loop.
+    """
+    import os
+    out = {"project_ref": None, "git_available": False}
+    try:
+        r = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=2.0, cwd=os.getcwd())
+        if r.returncode == 0:
+            url = r.stdout.strip()
+            if url:
+                out["project_ref"] = f"repo:{url}"
+                out["git_available"] = True
+    except Exception:
+        pass  # fail-soft: git missing / not a repo / timeout -> None
+    return out
+
+
 def _service():
     """Lazy service handle shared with __init__ (same KB package on path)."""
     import os
@@ -338,6 +371,15 @@ class _WriteSideState:
         self._rules_by_session: dict[str, CandidateDetector] = {}
         self._last_session: Optional[str] = None
         self._aggregator: Optional[ClarifyAggregator] = None
+        # PRD v2-final TR-1 (note 3): per-session repo-context capture cache
+        # — session_id -> {"project_ref": str|None, "git_available": bool}.
+        # Populated by on_turn's _capture_repo_ctx (fail-soft: git
+        # unavailable / no remote -> project_ref None -> the doc routes to
+        # experience/transcript, NEVER to archive). The capture is cached
+        # per session because the turn loop is the only place the plugin
+        # touches the working directory; a session that never fires a git
+        # probe keeps the empty dict entry (key absent -> None lookup).
+        self._repo_ctx: dict[str, dict] = {}
         # LLM write-side face state (budget-gated per session; the LLM pass
         # only ever runs on a regex-flagged candidate — 避免烧预算).
         self._llm_calls_by_session: dict[str, int] = {}
@@ -415,6 +457,14 @@ class _WriteSideState:
         # the task-boundary sink uses them as the extracted docs' premise
         # context. Pure in-memory bookkeeping, never blocks the turn.
         self.remember_turn_msgs(session_id, user_message, assistant_response)
+
+        # PRD v2-final TR-1 (note 3): capture the git repo context
+        # (toplevel/remote) for this session, ONCE per session
+        # (fail-soft: git unavailable -> project_ref None -> no archive
+        # upgrade). Cache in _repo_ctx; the capture itself is the module
+        # helper _capture_repo_ctx below.
+        if session_id not in self._repo_ctx:
+            self._repo_ctx[session_id] = _capture_repo_ctx()
 
         det = self._detector_for(session_id)
         text = f"{user_message or ''}\n{assistant_response}"
@@ -834,6 +884,12 @@ class _WriteSideState:
                         pending.append(c)
         if not pending:
             return ""
+        # 噪声候选（纯指令/疑问型短标题，如「推」「那就帮我加」）不上注入面：
+        # 红线「噪声永不上判定面」——staging 行留盘供审计，但 clarify 脚注不列。
+        # 宁漏勿进：只滤高置信噪声标题，真结论/配置片段照弹。
+        pending = [c for c in pending if not is_noise_title(c.title)]
+        if not pending:
+            return ""
         lines = ["【知识待确认】以下条目是本轮自动识别、尚未确认的知识候选（pending，暂存于 KB staging）："]
         for i, c in enumerate(pending, 1):
             lines.append(f"{i}. [{c.label}] {c.title}（doc_id: {c.doc_id}）")
@@ -893,7 +949,8 @@ class _WriteSideState:
     # ------------------------------------------------------------------
 
     def _build_agent_doc(self, cand: "Candidate",
-                         session_msgs: Optional[dict]) -> Optional[dict]:
+                         session_msgs: Optional[dict],
+                         kb_tier: Optional[str] = None) -> Optional[dict]:
         """TR-4: one pending candidate -> one agent-experience doc.
 
         The "带前提条件" structuring (G3):
@@ -905,6 +962,12 @@ class _WriteSideState:
             hit); empty -> premise stays unset, premise_status is
             auto-defaulted to True by _normalize_docs and R-6 treats a
             missing premise as needs_verification on next contact.
+
+        note 5 (PRD v2-final): the ``project_ref`` key is written ONLY
+        for the archive tier (kb_tier=archive AND cand.project_ref set).
+        Experience/transcript docs OMIT the key entirely (never None) —
+        a None-valued key would be a no-op under the B1 None-filter but
+        is semantically dirty; omitting is the cleaner contract.
         """
         title = str(cand.title or cand.label or "agent 经验")[:200]
         content = str(cand.content or "").strip()
@@ -929,6 +992,12 @@ class _WriteSideState:
             "source_profile": cand.source_profile,
             "source_session_id": cand.source_session_id,
         }
+        # note 5: the project_ref key is ARCHIVE-ONLY. A non-None
+        # project_ref + archive kb_tier -> stamp the key; everything
+        # else (experience, transcript, or a missing project_ref)
+        # omits the key entirely.
+        if kb_tier == "archive" and cand.project_ref:
+            doc["project_ref"] = cand.project_ref
         if not (5 <= len(doc["title"]) <= 200):
             doc["title"] = (doc["title"][:5] + "…") if doc["title"] \
                 else "agent 经验条目"
@@ -976,16 +1045,32 @@ class _WriteSideState:
             now = _time_utcnow()
             docs: list[dict] = []
             for cand in pending:
+                # B4 step ①: independent 4-class anchor regex over the
+                # RAW content (zero LLM — the anchor source that stays
+                # live when the distill face fails; N2: an empty result
+                # is the step ③ transcript-drop signal).
+                from kb_service import extract_anchor_points as _ea
+                regex_anchors = _ea(cand.content)
+                # note 3: carry the captured git remote into the
+                # candidate so the doc can route to archive (a None
+                # project_ref keeps the doc in experience/transcript).
+                if cand.project_ref is None:
+                    repo = self._repo_ctx.get(cand.source_session_id)
+                    if repo:
+                        cand.project_ref = repo.get("project_ref")
+
                 doc = self._build_agent_doc(cand, msgs)
                 if doc is None:
                     continue
-                # Distill structure gate on the experience body (the
-                # judgment face kb_distill.py is REUSED, not rewritten):
-                # a verdict that fails the structure gate is discarded
-                # (same as the existing distill face) — only a gate-passing
-                # distilled body (or the fail-soft original) re-enters.
+                # B4 step ②: LLM distill judges experience/transcript
+                # (the existing verdict path, budget-gated, fail-soft).
                 verdict = None
-                if self._distill_enabled():
+                # Test hook: pre-resolved verdicts keyed by session
+                # (skip the LLM face entirely; used by B4 routing tests).
+                pre = getattr(self, "_distill_verdicts", None)
+                if pre is not None and prev_session_id in pre:
+                    verdict = pre[prev_session_id]
+                elif self._distill_enabled():
                     dcfg = (self.rules().get("llm") or {}).get("distill") or {}
                     limit = int(dcfg.get("per_session", 3))
                     used = self._distill_calls_by_session.get(
@@ -999,11 +1084,87 @@ class _WriteSideState:
                         if verdict.get("model_used"):
                             self._distill_calls_by_session[prev_session_id] = \
                                 used + 1
+                # B4 step ③: LLM fail + no independent regex anchors
+                # = transcript DROP (N2: not staged live, not a pool
+                # occupier — only the audit record carries it; stale
+                # routing goes to the stale_staging audit state).
+                llm_fail = (verdict is not None
+                            and verdict.get("use_original")
+                            and not verdict.get("model_used"))
+                if llm_fail and not regex_anchors:
+                    svc._audit(action="transcript_drop",
+                               doc_id=cand.doc_id,
+                               source_profile=cand.source_profile,
+                               kb_tier="transcript",
+                               llm_fail=True,
+                               reason=verdict.get("reason"),
+                               session_id=prev_session_id)
+                    logger.debug("kb task-boundary: transcript drop "
+                                 "(LLM fail + no anchors) doc_id=%s",
+                                 cand.doc_id)
+                    continue
+                # Healthy verdict body + anchor UNION (regex ∪ LLM; the
+                # regex anchors are the source of truth, LLM extras are
+                # appended — "LLM fail 时锚点全丢→该归档的没归档" is
+                # exactly what the union prevents).
                 if verdict and not verdict.get("use_original"):
                     doc["content"] = verdict["distilled_content"]
                     doc["title"] = verdict["distilled_title"] or doc["title"]
                     doc["original_content"] = cand.content
-                    doc["anchor_points"] = verdict.get("anchor_points") or []
+                    from kb_service import union_anchor_points as _ua
+                    doc["anchor_points"] = _ua(
+                        cand.content,
+                        verdict.get("anchor_points") or [])
+                else:
+                    # LLM fail-soft (original content stands) OR no
+                    # distill verdict: stamp the regex-only anchors.
+                    if regex_anchors:
+                        doc["anchor_points"] = list(regex_anchors)
+                # B4 step ② (LLM-healthy path) or step ① routing mark:
+                # the kb_tier field is the routing outcome. When the LLM
+                # verdict is healthy it carries a tier ("model-misremembers"
+                # / "model-knows" / "transcript" — the distill face's own
+                # three-tier judgment); when the LLM FAILED (use_original +
+                # model_used=False) the tier is derived from the regex
+                # anchors: anchors + incident = archive, else experience
+                # (the LLM-fail fail-open to archive is FORBIDDEN — an
+                # anchor-less LLM-fail doc can only be experience or
+                # transcript, never archive).
+                if verdict and verdict.get("model_used"):
+                    # LLM healthy: its tier judgment is authoritative.
+                    _llm_tier = verdict.get("tier")
+                    if _llm_tier == "model-misremembers":
+                        # The model misremembers — a concrete knowledge
+                        # unit worth persisting (the archive tier when
+                        # the doc also carries independent anchors).
+                        doc["kb_tier"] = ("archive"
+                                          if regex_anchors and
+                                          cand.classified_type == "incident"
+                                          else "experience")
+                    elif _llm_tier == "transcript":
+                        # The LLM judged this a flow log / meeting note:
+                        # NOT knowledge, stays in staging as audit-only.
+                        doc["kb_tier"] = "transcript"
+                    else:
+                        # model-knows or unknown tier: experience floor.
+                        doc["kb_tier"] = "experience"
+                else:
+                    # LLM fail (or no verdict): derive from regex anchors.
+                    # NO fail-open to archive — an anchor-less LLM-fail
+                    # doc can only be experience (the tier the agent
+                    # partition self-confirms by default).
+                    doc["kb_tier"] = ("archive"
+                                      if regex_anchors and
+                                      cand.classified_type == "incident"
+                                      else "experience")
+                # N2: non-experience routing docs (archive / transcript)
+                # are audit rows — they stay in staging as PENDING and
+                # are NEVER self-confirmed into the confirmed corpus.
+                # The stale_staging mark is the signal that skips the
+                # agent self-confirm (the terminal backstop is the note 4
+                # TTL sweep, not the clarify batch).
+                if doc.get("kb_tier") != "experience":
+                    doc["stale_staging"] = True
                 doc["agent_extracted_at"] = now
                 docs.append(doc)
             if not docs:
@@ -1018,6 +1179,8 @@ class _WriteSideState:
             # near-dup reject would skip staging, and confirming a
             # non-staged row would just log not_found noise) — the
             # staged list from the ingest result is authoritative.
+            # N2 routing: docs marked stale_staging=True are audit rows
+            # — they stay PENDING in staging and are NOT self-confirmed.
             staged_ids = set(out.get("staged") or [])
             if staged_ids:
                 # Map the stamped docids back onto our local doc copies
@@ -1029,6 +1192,9 @@ class _WriteSideState:
             confirmed: list[str] = []
             for d in docs:
                 if d.get("docid") not in staged_ids:
+                    continue
+                if d.get("stale_staging"):
+                    # N2: audit-only row — stay PENDING, no self-confirm.
                     continue
                 res = svc.confirm(d["docid"],
                                   source_profile=d.get("source_profile"),
@@ -1213,6 +1379,20 @@ def _agent_in_decay_gate(result: dict, now_ts: float) -> bool:
     meta = result.get("metadata") or {}
     if meta.get("premise_status") not in (True, "true"):
         return False
+    # B3 exemption branch (PRD v2-final): incident + project_ref +
+    # premise held -> the doc is a PROJECT ARCHIVE and is EXEMPT from
+    # the 14-day decay window — it stays in the auto-injection pool
+    # long-term (the archive tier's retrieval guarantee). The branch
+    # sits DELIBERATELY AFTER the premise_status check above (B3's
+    # fail-closed ruling: a FALSIFIED premise is never exempted —
+    # falsified archives exit the pool via set_premise_status's
+    # downgrade path, not via this gate) and BEFORE the
+    # reference_count / age checks (the exemption short-circuits both:
+    # an archive must not decay just because nobody has cited it yet).
+    if (meta.get("kb_class") == "incident"
+            and meta.get("project_ref")
+            and meta.get("premise_status") in (True, "true")):
+        return True
     ref_count = meta.get("reference_count")
     if ref_count is not None and int(ref_count) > 0:
         return True
@@ -1484,6 +1664,10 @@ def _make_read_callback(ctx):
             logger.debug("kb auto-retrieve search failed: %s", exc)
             return {}
         user_hits = (results or {}).get("data", {}).get("results") or []
+        # 噪声 doc（纯指令/疑问型短标题，如「推」「那就帮我加」）不上自动注入面：
+        # 红线「噪声永不上判定面」——confirmed corpus 行保留供审计，但 auto-inject 不捞。
+        # 宁漏勿进：只滤高置信噪声标题，真经验照带。
+        user_hits = [h for h in user_hits if not is_noise_title(h.get("title", ""))]
         # TR-2 agent partition: SECOND, profile-scoped fetch over the
         # origin_kind=agent slice (TR-8 implicit source_profile scoping,
         # built here at the plugin layer — svc.search has no implicit
@@ -1504,6 +1688,7 @@ def _make_read_callback(ctx):
                 h for h in ((agent_results or {}).get("data", {}).get("results") or [])
                 if str(h.get("doc_id")) not in seen
                 and _agent_in_decay_gate(h, now_ts)
+                and not is_noise_title(h.get("title", ""))
             ]
         except Exception as exc:
             logger.debug("kb auto-retrieve agent-partition search failed: %s", exc)
