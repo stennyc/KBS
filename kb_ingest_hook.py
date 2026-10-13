@@ -57,12 +57,14 @@ try:
         is_trivial_query, merge_rules,
     )
     from .kb_distill import distill_content as _distill_content
+    from .kb_distill import LLM_CALL_TIMEOUT as _LLM_JUDGE_TIMEOUT
 except ImportError:
     from kb_ingest_rules import (
         Candidate, CandidateDetector, ClarifyAggregator, dry_run_log,
         is_trivial_query, merge_rules,
     )
     from kb_distill import distill_content as _distill_content
+    from kb_distill import LLM_CALL_TIMEOUT as _LLM_JUDGE_TIMEOUT
 
 # kb_class (staging row) -> user-facing clarify label (the same mapping
 # the rule engine assigns at scan time; see DEFAULT_RULES in
@@ -193,6 +195,7 @@ def _llm_judge_candidate(main_runtime, text: str,
             messages=[{"role": "user", "content": user_msg}],
             temperature=0.0,
             max_tokens=96,
+            timeout=_LLM_JUDGE_TIMEOUT,
             route_info=route_info,
         )
     except Exception as exc:  # host down / timeout / shape: regex verdict stands

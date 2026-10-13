@@ -255,9 +255,12 @@ class _FakeHostCall:
         self.raise_exc = raise_exc
         self.calls = 0
         self._ref = call_count_ref
+        self.timeout_kwargs = []  # every `timeout=` kwarg passed by the caller
 
     def __call__(self, **kwargs):
         self.calls += 1
+        if "timeout" in kwargs:
+            self.timeout_kwargs.append(kwargs["timeout"])
         if self._ref is not None:
             self._ref[0] += 1
         if self.raise_exc:
@@ -326,6 +329,31 @@ def test_llm_unparseable_reply_fails_soft(monkeypatch):
     monkeypatch.setattr(hook, "_HOST_CALL_LLM", fake)
     out = _llm_judge_candidate({"model": "m"}, "text", _mk_cand())
     assert out is not None and out.classified_type == "decision"
+
+
+def test_llm_judge_passes_short_timeout(monkeypatch):
+    """The judge LLM call must pass a SHORT timeout (well under the host's
+    60s default + the 30s hook ceiling) so a hung upstream can't trip the
+    whole hook callback. The caller's explicit timeout wins over config."""
+    fake = _FakeHostCall('{"worth": true, "kb_class": "decision"}')
+    monkeypatch.setattr(hook, "_HOST_CALL_LLM", fake)
+    _llm_judge_candidate({"model": "m"}, "text", _mk_cand())
+    assert fake.calls == 1
+    assert fake.timeout_kwargs, "judge must pass an explicit short timeout"
+    assert fake.timeout_kwargs[0] <= 15.0, \
+        f"judge timeout {fake.timeout_kwargs[0]}s not under the 15s budget"
+
+
+def test_llm_judge_short_timeout_fail_soft(monkeypatch):
+    """A timeout from the host LLM channel degrades to the regex verdict
+    (fail-soft) exactly like any other host failure — never regresses."""
+    fake = _FakeHostCall("ignored", raise_exc=True)
+    monkeypatch.setattr(hook, "_HOST_CALL_LLM", fake)
+    out = _llm_judge_candidate({"model": "m"}, "text", _mk_cand())
+    assert out is not None
+    assert out.classified_type == "decision"
+    assert fake.calls == 1
+    assert fake.timeout_kwargs, "even a failing call must carry the short timeout"
 
 
 def test_write_side_on_turn_llm_budget_over_cap_keeps_regex():
@@ -471,6 +499,37 @@ def test_distill_no_runtime_fallback_original():
     assert v["use_original"] is True
     assert v["reason"] == "no_runtime"
     assert fake.calls == 0
+    monkey.restore()
+
+
+def test_distill_passes_short_timeout():
+    """The distill LLM call must pass a SHORT timeout (well under the host's
+    60s default + the 30s hook ceiling) so a hung upstream can't trip the
+    whole hook callback. The caller's explicit timeout wins over config."""
+    import kb_distill
+    fake = _FakeHostCall('{"tier": "model-unknown", "distilled_content": "x"}')
+    monkey = _Monkey()
+    monkey.set(kb_distill, "_HOST_CALL_LLM", fake)
+    kb_distill.distill_content({"model": "m"}, "T", "original content text")
+    assert fake.calls == 1
+    assert fake.timeout_kwargs, "distill must pass an explicit short timeout"
+    assert fake.timeout_kwargs[0] <= 15.0, \
+        f"distill timeout {fake.timeout_kwargs[0]}s not under the 15s budget"
+    monkey.restore()
+
+
+def test_distill_short_timeout_fail_soft():
+    """A timeout from the host LLM channel degrades to the ORIGINAL content
+    (fail-soft) exactly like any other host failure — data is never lost."""
+    import kb_distill
+    fake = _FakeHostCall("ignored", raise_exc=True)
+    monkey = _Monkey()
+    monkey.set(kb_distill, "_HOST_CALL_LLM", fake)
+    v = kb_distill.distill_content({"model": "m"}, "T", "original content text")
+    assert v["use_original"] is True
+    assert v["distilled_content"] == "original content text"
+    assert fake.calls == 1
+    assert fake.timeout_kwargs, "even a failing distill call must carry the short timeout"
     monkey.restore()
 
 

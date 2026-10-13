@@ -57,6 +57,22 @@ _DISTILL_CONTENT_MAX = 10000
 _DISTILL_TITLE_MIN = 5
 _DISTILL_TITLE_MAX = 200
 
+# The write-side hook runs inside the host's 30s `post_llm_call` callback
+# ceiling (`_HOOK_CALLBACK_TIMEOUT_SECS`). The host LLM channel's DEFAULT
+# per-call timeout is 60s (`auxiliary.*.timeout`) — longer than that ceiling —
+# so when the upstream gateway hangs, the host abandons the whole hook
+# before the LLM call can even finish (the transient-retry ladder inside
+# call_llm never gets a chance to unfold). Pass an EXPLICIT short timeout
+# here: the caller's value wins over config (`_effective_aux_timeout`), so a
+# hung upstream degrades to the fail-soft original within ~15s instead of
+# tripping the whole 30s hook callback. 15s comfortably fits judge + distill
+# (worst-case sequential ~5s + 15s = 20s) inside the 30s ceiling with headroom,
+# and gives a 1024-token distill a fair shot at completing (at ~50 tok/s a full
+# 1024-token response needs ~20s — 15s recovers the common short-distill case
+# while still staying well under the hook ceiling; a truly long tail falls back
+# to the fail-soft original, which is data-safe by design).
+LLM_CALL_TIMEOUT = 15.0
+
 DISTILL_INSTRUCTIONS = (
     "You are a knowledge-base curator. Given raw text that someone wants to "
     "persist into a shared knowledge base, distill it into the MINIMAL "
@@ -167,6 +183,7 @@ def distill_content(main_runtime: Optional[Dict[str, Any]],
             messages=[{"role": "user", "content": user_msg}],
             temperature=0.0,
             max_tokens=1024,
+            timeout=LLM_CALL_TIMEOUT,
             route_info=route_info,
         )
     except Exception as exc:  # host down / timeout / shape: original stands
