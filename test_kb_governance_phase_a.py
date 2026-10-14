@@ -1348,3 +1348,121 @@ def test_read_side_filters_noise_docs_from_inject():
     # 直接验判定逻辑（读侧两处都调 is_noise_title(h.get("title",""))）
     assert is_noise_title("推") is True
     assert is_noise_title("读侧裸 import 崩溃，bootstrap 修复") is False
+
+# ---------------------------------------------------------------------------
+# knowledge_base_get 读面（owner 2026-10-13：确定性直取一条 doc，
+# 不赌 BM25 词面；堵死"验证已知 doc 只能赌搜索"的可观测性缺口）。
+# ---------------------------------------------------------------------------
+import unittest as _ut
+
+class GetReadSideTests(_ut.TestCase):
+
+    def test_get_confirmed_doc_returns_full_metadata(self):
+        import tempfile
+        from pathlib import Path
+        d = tempfile.TemporaryDirectory(); self.addCleanup(d.cleanup)
+        from kb_service import KbSearchService
+        svc = KbSearchService(Path(d.name))
+        svc.ingest([{"docid": "g-1", "title": "确定性直取测试",
+                     "content": "这是 get 读面的 verified 内容",
+                     "status": "confirmed", "source_profile": "coder"}])
+        r = svc.get("g-1")
+        assert r["found"] is True, r
+        assert r["layer"] in ("hot", "cold"), r
+        assert r["doc_id"] == "g-1"
+        assert r["doc"].get("title") == "确定性直取测试"
+        assert "verified 内容" in r["doc"].get("content", "")
+
+    def test_get_staged_pending_doc_falls_back_to_staging(self):
+        import tempfile
+        from pathlib import Path
+        d = tempfile.TemporaryDirectory(); self.addCleanup(d.cleanup)
+        from kb_service import KbSearchService
+        svc = KbSearchService(Path(d.name))
+        svc.ingest([{"docid": "g-2", "title": "pending 行",
+                     "content": "尚未 confirm 的 staging 行",
+                     "status": "pending", "source_profile": "coder"}])
+        r = svc.get("g-2")
+        assert r["found"] is True, r
+        assert r["layer"] == "staging", r
+        assert r["doc"].get("title") == "pending 行"
+
+    def test_get_unknown_doc_returns_not_found(self):
+        import tempfile
+        from pathlib import Path
+        d = tempfile.TemporaryDirectory(); self.addCleanup(d.cleanup)
+        from kb_service import KbSearchService
+        svc = KbSearchService(Path(d.name))
+        svc.ingest([{"docid": "g-3", "title": "存在", "content": "x",
+                     "status": "confirmed", "source_profile": "coder"}])
+        r = svc.get("does-not-exist")
+        assert r["found"] is False, r
+        assert r["doc_id"] == "does-not-exist"
+
+    def test_get_empty_docid_rejected(self):
+        import tempfile
+        from pathlib import Path
+        d = tempfile.TemporaryDirectory(); self.addCleanup(d.cleanup)
+        from kb_service import KbSearchService
+        svc = KbSearchService(Path(d.name))
+        r = svc.get("")
+        assert r["found"] is False, r
+        assert r["doc_id"] == ""
+
+    def test_get_excludes_stale_staging_audit_rows(self):
+        # owner 2026-10-14 nit: get() must NOT surface a re-keyed stale_staging
+        # audit copy (note 4 TTL sweep moved a pending row out of the active
+        # face) — find_active() is the correct staging read.
+        import tempfile
+        from pathlib import Path
+        d = tempfile.TemporaryDirectory(); self.addCleanup(d.cleanup)
+        from kb_service import KbSearchService
+        svc = KbSearchService(Path(d.name))
+        svc.ingest([{"docid": "g-stale", "title": "stale 行",
+                     "content": "超 TTL 被 sweep 成 stale_staging 的审计副本",
+                     "status": "pending", "source_profile": "coder"}])
+        # simulate the note-4 sweep: re-key the row to stale_staging
+        import time
+        now = time.time() + 31*86400 + 604800
+        svc._staging.sweep_stale(now_ts=now)
+        r = svc.get("g-stale")
+        assert r["found"] is False, (
+            f"stale_staging row must NOT be surfaced as reachable: {r}")
+
+# ---------------------------------------------------------------------------
+# knowledge_base_get 注册面（owner 2026-10-14 nit：宿主加载后 register()
+# 必须把 knowledge_base_get 接对 _get_handler + GET_SCHEMA，空 doc_id 返回
+# error JSON 而非异常。锁死"未来重构摘掉注册也逃不过测试"）。
+# ---------------------------------------------------------------------------
+class GetRegistrationFaceTests(_ut.TestCase):
+    def _plugin_module(self):
+        import importlib.util
+        from pathlib import Path
+        p = Path(__file__).resolve().parent / "__init__.py"
+        spec = importlib.util.spec_from_file_location(
+            "kb_plugin_reg_test", p)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def test_register_wires_get_tool(self):
+        m = self._plugin_module()
+        tools = []
+        class FakeCtx:
+            def register_tool(self, **k):
+                tools.append((k["name"], k["handler"], k.get("schema")))
+            def register_hook(self, *a, **k):
+                pass
+        m.register(FakeCtx())
+        names = [t[0] for t in tools]
+        assert "knowledge_base_get" in names, names
+        g = [t for t in tools if t[0] == "knowledge_base_get"][0]
+        assert g[1] is m._get_handler, "get tool not wired to _get_handler"
+        assert g[2] is m.GET_SCHEMA, "get tool not wired to GET_SCHEMA"
+
+    def test_get_handler_empty_docid_returns_error_json(self):
+        import json
+        m = self._plugin_module()
+        out = json.loads(m._get_handler({"doc_id": ""}))
+        assert out.get("status") == "error", out
+        assert out.get("error") == "doc_id is required", out

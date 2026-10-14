@@ -127,7 +127,19 @@ SEARCH_SCHEMA = {
             },
             "filters": {
                 "type": "object",
-                "description": "Optional metadata key-equality filters.",
+                "description": (
+                    "Optional metadata key-equality filters. Special key "
+                    "'source_profile' controls profile scoping (TR-8): "
+                    "when OMITTED, the caller's own profile is auto-injected "
+                    "(a profile never sees other profiles' docs). "
+                    "Pass source_profile=null to opt into the cross-profile "
+                    "GLOBAL search door (the only path out of profile-"
+                    "scoping, R-7). Pass source_profile='__unset__' to "
+                    "match rows whose source_profile key is physically "
+                    "absent OR null-valued (B1 None-filter sentinel). "
+                    "Other filter keys (origin_kind, topic, premise_status, "
+                    "kb_class) use exact-equality or the '__unset__' "
+                    "sentinel (matches key-absent OR value-None)."),
             },
             "min_score": {
                 "type": "number",
@@ -572,6 +584,49 @@ def _share_to_global_handler(args: dict, **kwargs) -> str:
     return json.dumps(out, ensure_ascii=False)
 
 
+GET_SCHEMA = {
+    "name": "knowledge_base_get",
+    "description": (
+        "Deterministic single-doc read by doc_id. Unlike "
+        "knowledge_base_search (BM25 word-surface, top-k ranked), get() "
+        "fetches EXACTLY one doc by its content-addressed id with no "
+        "query and no ranking — it cannot 0-hit on a word-surface "
+        "mismatch. Use it to verify 'is this specific doc reachable' "
+        "(e.g. after confirm / share_to_global, to confirm the global "
+        "copy landed) without gambling on a search query. Reads the "
+        "confirmed two-layer corpus (hot then cold) and falls back to "
+        "the staging store for pending rows. Returns "
+        "{found, layer, doc_id, doc} where doc carries full title + "
+        "content + metadata; layer is 'hot' | 'cold' | 'staging'. "
+        "A not-found id returns {found: false, doc_id} — no error."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "doc_id": {
+                "type": "string",
+                "description": (
+                    "The content-addressed docid (uuid5) to fetch."
+                ),
+            },
+        },
+        "required": ["doc_id"],
+    },
+}
+
+
+def _get_handler(args: dict, **kwargs) -> str:
+    svc = _svc()
+    doc_id = str(args.get("doc_id", "")).strip()
+    if not doc_id:
+        return json.dumps({"status": "error",
+                           "error": "doc_id is required"},
+                          ensure_ascii=False)
+    out = svc.get(doc_id)
+    out["status"] = "success"
+    return json.dumps(out, ensure_ascii=False)
+
+
 def register(ctx):
     """Register all tools with the Hermes framework (see lucky-calc shape)."""
     ctx.register_tool(
@@ -615,6 +670,13 @@ def register(ctx):
         schema=SHARE_TO_GLOBAL_SCHEMA,
         handler=_share_to_global_handler,
         emoji="🌐",
+    )
+    ctx.register_tool(
+        name="knowledge_base_get",
+        toolset="knowledge-base-search",
+        schema=GET_SCHEMA,
+        handler=_get_handler,
+        emoji="🔍",
     )
     # Write side: post_llm_call candidate detection + session-aggregated
     # clarify (pure rules, no new LLM call). The sibling-module import is

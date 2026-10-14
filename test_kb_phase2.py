@@ -628,7 +628,8 @@ class TR4TaskBoundarySinkTests(unittest.TestCase):
         # consumes the aggregator's full per-session candidate list).
         state._loaded_rules = {"enabled": True, "clarify_batch_size": 1,
                                "min_cue_hits": 1, "rules": [],
-                               "llm": {"enable": False}}
+                               "llm": {"enable": False,
+                                       "distill": {"enable": False}}}
         cand = _cand("doc-1", "修复 网关 偶发 报错 的 根因 路径",
                      "网关 偶发 报错 根因 是 重试 预算 配置 冲突 甲乙丙丁戊己",
                      profile="coder", session="s1")
@@ -738,7 +739,8 @@ class TR4TaskBoundarySinkTests(unittest.TestCase):
         state = _WriteSideState(_ctx())
         state._loaded_rules = {"enabled": True, "clarify_batch_size": 99,
                                "min_cue_hits": 1, "rules": [],
-                               "llm": {"enable": False}}
+                               "llm": {"enable": False,
+                                       "distill": {"enable": False}}}
         cand = _cand("doc-i", "第二次 边界 触发 幂等 测试",
                      "第二次 边界 触发 应该 幂等 不重复 入 账 甲乙丙丁戊己",
                      profile="coder", session="s1")
@@ -771,7 +773,8 @@ class TR4TaskBoundarySinkTests(unittest.TestCase):
                 state._loaded_rules = {"enabled": True,
                                        "clarify_batch_size": 99,
                                        "min_cue_hits": 1, "rules": [],
-                                       "llm": {"enable": False}}
+                                       "llm": {"enable": False,
+                                               "distill": {"enable": False}}}
                 cand = _cand(f"doc-{reason_code}",
                              f"{reason_code} 兜底 测试 条目",
                              f"{reason_code} 兜底 测试 条目 甲乙丙丁戊己庚辛",

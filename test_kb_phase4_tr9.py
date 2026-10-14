@@ -279,7 +279,7 @@ class TR9IncidentSelfConfirmTests(unittest.TestCase):
         state._loaded_rules = {
             "enabled": True, "clarify_batch_size": 5, "min_cue_hits": 1,
             "rules": merge_rules(None)["rules"],
-            "llm": {"enable": False},
+            "llm": {"enable": False, "distill": {"enable": False}},
         }
         state._service_override = rec
 
@@ -364,7 +364,7 @@ class TR9IncidentSelfConfirmTests(unittest.TestCase):
         state._loaded_rules = {
             "enabled": True, "clarify_batch_size": 5, "min_cue_hits": 1,
             "rules": merge_rules(None)["rules"],
-            "llm": {"enable": False},
+            "llm": {"enable": False, "distill": {"enable": False}},
         }
         state._service_override = rec
 
@@ -411,7 +411,7 @@ class TR9IncidentSelfConfirmTests(unittest.TestCase):
         state._loaded_rules = {
             "enabled": True, "clarify_batch_size": 5, "min_cue_hits": 1,
             "rules": merge_rules(None)["rules"],
-            "llm": {"enable": False},
+            "llm": {"enable": False, "distill": {"enable": False}},
         }
         state._service_override = rec
 

@@ -356,6 +356,31 @@ class KbSearchService:
         finally:
             self._close_lock(fd)
 
+    def _locate_doc_by_id_with_layer(self, docid: str) -> tuple:
+        """Single-pass locator returning (doc, layer) or (None, None).
+
+        The O(n) companion to ``_find_doc_by_id`` for the ``get()`` read
+        face: one hot->cold sweep yields BOTH the doc and the layer it was
+        found in, so callers never need a second docs_snapshot() scan to
+        re-derive the layer label. Same SH-lock + first-hit-wins invariant
+        as ``_find_doc_by_id`` (a doc lives in exactly one layer at a time).
+        ``_find_doc_by_id`` itself is left untouched (reinforce() depends
+        on its doc-only return shape).
+        """
+        fd = self._open_lock(exclusive=False)
+        try:
+            for layer_name, layer in (("hot", self._hot),
+                                      ("cold", self._cold)):
+                for d in layer.docs_snapshot():
+                    if str(d.get("docid")) == docid:
+                        out = {k: v for k, v in d.items()}
+                        out["anchor_points"] = (d.get("anchor_points")
+                                                or d.get("anchors") or [])
+                        return out, layer_name
+            return None, None
+        finally:
+            self._close_lock(fd)
+
     # ---- audit -------------------------------------------------------------
 
     def _audit(self, **fields) -> None:
@@ -1064,6 +1089,50 @@ class KbSearchService:
                     "to": target}
         finally:
             self._close_lock(fd)
+
+    # ---- get (deterministic single-doc read path) ------------------------
+    # Backs the knowledge_base_get tool face. Fills the observability gap
+    # left by search(): verifying "is this known doc reachable" must NOT
+    # require a BM25 word-surface gamble. Returns {found, doc_id, layer,
+    # doc|staging_row} without scanning the whole corpus text index.
+
+    def get(self, doc_id: str) -> dict:
+        """Deterministically fetch one doc by its external doc_id.
+
+        Reads BOTH faces, in priority order:
+          1. confirmed two-layer corpus (hot then cold) via
+             ``_find_doc_by_id`` — the searchable path.
+          2. staging store (pending rows) — a not-yet-confirmed doc is
+             still addressable by id, returned with its ``status`` so the
+             caller can tell "reachable pending" from "gone".
+
+        Returns ``{"found": True, "layer": "hot"|"cold"|"staging",
+        "doc_id": ..., "doc": {...full metadata incl. content...}}`` on a
+        hit, or ``{"found": False, "doc_id": ...}`` when the id is not in
+        either face. No BM25, no word-surface dependency: this is the
+        direct path the search() tool cannot offer.
+        """
+        doc_id = str(doc_id or "").strip()
+        if not doc_id:
+            return {"found": False, "doc_id": ""}
+        # Single pass over hot->cold returns BOTH the doc and its layer, so
+        # get() is O(n) not O(2n) (no second docs_snapshot() scan to re-derive
+        # the layer label). _find_doc_by_id is left untouched for reinforce().
+        found, layer = self._locate_doc_by_id_with_layer(doc_id)
+        if found is not None:
+            return {"found": True, "layer": layer,
+                    "doc_id": doc_id, "doc": found}
+        # Confirmed corpus miss: check the physically-isolated staging face.
+        # Use find_active() — NOT find() — so a re-keyed stale_staging audit
+        # copy (note 4 TTL sweep) is not surfaced as a reachable pending row;
+        # that matches the active clarify/confirm face exactly (owner 2026-10-14
+        # review nit: a get() that hands back a stale_staging row would let an
+        # agent mistake an audit-only row for a confirmable pending one).
+        row = self._staging.find_active(doc_id)
+        if row is not None:
+            return {"found": True, "layer": "staging",
+                    "doc_id": doc_id, "doc": dict(row)}
+        return {"found": False, "doc_id": doc_id}
 
     # ---- search (single-shot read path) ----------------------------------
 
