@@ -118,6 +118,25 @@ def _queue_pending(ctx, session_id, doc_ids, *, fired=True, last_session=None):
             cue_hits=["决定采用"]))
 
 
+def _queue_legacy_pending(ctx, session_id, doc_ids, *, fired=True, last_session=None):
+    """Like _queue_pending but for the LEGACY rule path (v2, 2026-10-14):
+    origin_kind=None candidates stay on the clarify human gate - they
+    must still build a footnote + ask, proving the legacy backstop
+    (a stale pre-v2 profile override re-introducing decision /
+    walkthrough / config cues) survives v2 unchanged."""
+    state = hook._STATES.setdefault(id(ctx), hook._WriteSideState(ctx))
+    if fired:
+        state._fire_clarify_fired.add(session_id)
+    if last_session is not None:
+        state._last_session = last_session
+    for d in doc_ids:
+        state._agg().add(Candidate(
+            doc_id=d, classified_type="decision", label="决策结论",
+            title=f"title-{d}", content=f"content-{d}",
+            source_session_id=session_id, source_profile="coder",
+            cue_hits=["决定采用"], origin_kind=None))
+
+
 class TestHookBehavior:
     def test_matching_turn_stages_pending(self, tmp_path):
         ctx = FakeCtx()
@@ -139,39 +158,31 @@ class TestHookBehavior:
         finally:
             hook._service = old
 
-    def test_batch_threshold_queues_footnote(self, monkeypatch):
-        """At the batch threshold the trigger STASHES (no
-        inject_message, TUI-safe); the NEXT pre_llm_call surfaces the
-        queued batch as a footnote, and the following turn does NOT
-        re-surface it (mark_asked fired at surfacing time)."""
+    def test_batch_threshold_queues_footnote(self):
+        """v2 (2026-10-14): the legacy clarify batch path (origin_kind=None,
+        i.e. a stale pre-v2 profile override re-introducing decision /
+        walkthrough / config cues) still STASHES at the batch threshold and
+        surfaces as a footnote on the next pre_llm_call, without
+        re-surfacing. The regex front gate can no longer produce a legacy
+        candidate by default (v2 retired those cues), so the legacy
+        behavior is driven via _queue_legacy_pending - the same code path
+        the write side takes for ANY origin_kind=None candidate.
+
+        The V2 path (all four v2 classes carry origin_kind=agent and
+        bypass the human gate entirely) is covered by
+        test_kb_ingest_rules_v2.py."""
         ctx = FakeCtx(batch_size=3)
-        cb = hook._make_callback(ctx)
-        old = hook._service
-        hook._service = _service_stub
-        # Isolate the config resolution: on a dev host hermes_cli.config
-        # loads successfully (non-None) and the real profile's plugins.entries
-        # lacks a knowledge-base-search key, so ctx.load_config() is never
-        # consulted and the test's batch_size=3 would be silently overridden
-        # by the default (5).  Force the ctx-only config path so the fixture
-        # is authoritative regardless of host environment.
-        monkeypatch.setattr(hook, "_effective_rules", lambda ctx_: merge_rules(
-            {"rules": {"clarify_batch_size": 3}}))
-        try:
-            for i in range(3):
-                _fire(ctx, cb, "s1", f"第{i}条 最终决定采用 选项{chr(65+i)}")
-            # The trigger itself must not post anything via the ctx.
-            assert ctx.injects == [], "footnote path must not use inject_message"
-            out = _note(ctx, "s1")
-            assert "context" in out, "at batch threshold the next pre_llm_call footnotes"
-            assert "【知识待确认】" in out["context"]
-            assert "决策结论" in out["context"]
-            # Anti re-surface: the same turn's candidates are marked asked
-            # when the footnote was emitted -> the next note is clean.
-            out2 = _note(ctx, "s1")
-            assert "【知识待确认】" not in out2.get("context", ""), \
-                "a surfaced batch must not re-surface next turn"
-        finally:
-            hook._service = old
+        _queue_legacy_pending(ctx, "s1", ["doc-0", "doc-1", "doc-2"],
+                              fired=True, last_session="s1")
+        out = _note(ctx, "s1")
+        assert "context" in out, "at batch threshold the next pre_llm_call footnotes"
+        assert "【知识待确认】" in out["context"]
+        assert "决策结论" in out["context"]
+        # Anti re-surface: the surfaced batch is marked asked -> the next
+        # note is clean.
+        out2 = _note(ctx, "s1")
+        assert "【知识待确认】" not in out2.get("context", ""), \
+            "a surfaced batch must not re-surface next turn"
 
     def test_below_batch_does_not_footnote(self):
         """Sub-batch pending candidates stay stashed until a TRIGGER

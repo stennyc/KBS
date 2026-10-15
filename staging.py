@@ -181,6 +181,26 @@ class StagingStore:
         self._index.replace(self._docs, generation)
         self._generation = generation
 
+    def apply_external_replace(self, docs: list[dict]) -> None:
+        """Owner-authorized out-of-band full replace of the pending row set.
+
+        A sweep/curator process (e.g. tools/kb_stage_v2_sweep.py --commit)
+        rewrites staging_docs.jsonl + deletes staging_index.pkl directly
+        on disk; the union-merge rebase in KbSearchService only ever ADDS
+        docids found on disk, it cannot drop rows the sweep quarantined
+        from this process's memory.  This entry point closes that gap:
+        the caller (under the data-dir EX lock, having verified the
+        external snapshot is authoritative — see kb_service._maybe_apply_
+        staging_external_replace) hands over the FULL current on-disk row
+        set and the in-memory store is replaced wholesale, so the very next
+        persist() writes the swept state back instead of resurrecting the
+        quarantined rows.  In-memory only; durability is the caller's job
+        (it already persists the same content via the normal path).
+        """
+        self._docs = [dict(d) for d in docs]
+        self._index.replace(self._docs, self._index.generation + 1)
+        self._generation = self._index.generation
+
     # ---- note 4: TTL sweep to stale_staging -------------------------------
 
     def find_active(self, doc_id: str) -> Optional[dict]:

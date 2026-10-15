@@ -72,7 +72,15 @@ except ImportError:
 # kb_ingest_rules). Used ONLY to rebuild a Candidate from a durable
 # staging row on the post-restart read path (the owner ruling "从
 # staging_docs.jsonl 按 doc_id 重读").
+# v2 (2026-10-14): the 4 v2 agent-knowledge classes; the 4 legacy
+# (decision/walkthrough/config/incident) labels stay as keys ONLY for
+# rebuilding pre-v2 staging rows that may still be on disk — they are
+# no longer produced by the default rule set.
 _KBCLASS_LABEL = {
+    "pattern": "可迁移套路",
+    "anti-pattern": "反模式陷阱",
+    "tool-quirk": "工具环境脾气",
+    "premise": "前提条件经验",
     "decision": "决策结论",
     "walkthrough": "踩坑排查路径",
     "config": "可复用配置片段",
@@ -145,13 +153,14 @@ def _clarify_state_store() -> Optional[Any]:
 _LLM_BUDGET_DEFAULT = 3
 _LLM_JUDGE_INSTRUCTIONS = (
     "You are a knowledge-base curator. Given a turn's text, decide whether it "
-    "is genuinely SINKING-WORTHY knowledge worth a durable doc (a settled "
-    "decision / a root-cause→fix walkthrough / a reusable config snippet / "
-    "an incidental edge-case fact learned in passing). "
-    "If it is mostly conversational filler, acknowledgement, or a question "
+    "is genuinely SINKING-WORTHY AGENT KNOWLEDGE — a reusable strategy, a "
+    "known trap/anti-pattern, a tool behavior boundary, or an experience "
+    "whose validity carries an explicit premise. "
+    "If it is mostly conversational filler, acknowledgement, a bare verdict "
+    "with no stated premise (\"我们拍板用 X\" is NOT this), or a question "
     "with no durable answer, judge it not worth saving. "
     'Return a single JSON object: {"worth": boolean, "title": string, '
-    '"kb_class": "decision"|"walkthrough"|"config"|"incident"|null}'
+    '"kb_class": "pattern"|"anti-pattern"|"tool-quirk"|"premise"|null}'
 )
 _LLM_JUDGE_SCHEMA = {
     "type": "object",
@@ -159,7 +168,9 @@ _LLM_JUDGE_SCHEMA = {
         "worth": {"type": "boolean"},
         "title": {"type": "string"},
         "kb_class": {"type": ["string", "null"],
-                     "enum": ["decision", "walkthrough", "config",
+                     "enum": ["pattern", "anti-pattern", "tool-quirk",
+                              "premise",
+                              "decision", "walkthrough", "config",
                               "incident", None]},
     },
     "required": ["worth"],
@@ -230,8 +241,10 @@ def _llm_judge_candidate(main_runtime, text: str,
     upgraded = Candidate(
         doc_id=fallback.doc_id,
         classified_type=(
-            _kb_class if _kb_class in ("decision", "walkthrough", "config",
-                                       "incident")
+            _kb_class if _kb_class in (
+                "pattern", "anti-pattern", "tool-quirk", "premise",
+                "decision", "walkthrough", "config", "incident",
+            )
             else fallback.classified_type
         ),
         label=fallback.label,
@@ -512,14 +525,16 @@ class _WriteSideState:
                 clarify_any = True
 
         if cand:
-            # TR-9: incident candidates (origin_kind="agent") bypass the
-            # clarify human gate — they are staged PENDING and immediately
-            # self-confirmed by the same profile (agent partition, G7/TR-9
-            # owner ruling "不需要人工"). Gate / near-dup backstop leaves
-            # the row in staging + audit (shared with TR-4 / G5). Legacy
-            # candidates (decision/walkthrough/config, origin_kind=None)
-            # stay on the existing _stage path (staging only; clarify
-            # aggregation + human confirm remains the backstop).
+            # v2 (2026-10-14): ANY candidate carrying origin_kind=agent
+            # (all four v2 classes — pattern / anti-pattern / tool-quirk
+            # / premise) bypasses the clarify human gate — staged PENDING
+            # and immediately self-confirmed by the same profile (the
+            # TR-9 "不需要人工" ruling extended from incident-only to the
+            # whole v2 rule set). Gate / near-dup backstop leaves the row
+            # in staging + audit (shared with TR-4 / G5). Legacy rule ids
+            # from a stale profile override (origin_kind=None) stay on
+            # the existing _stage path (staging only; clarify aggregation
+            # + human confirm remains the backstop).
             if cand.origin_kind == "agent":
                 self._stage_and_self_confirm(cand,
                                              distill_verdict=distill_v)
@@ -1137,9 +1152,12 @@ class _WriteSideState:
                         # The model misremembers — a concrete knowledge
                         # unit worth persisting (the archive tier when
                         # the doc also carries independent anchors).
+                        # v2 (2026-10-14): archive eligibility is the
+                        # agent partition itself (origin_kind=agent),
+                        # not the retired `incident` kb_class key.
                         doc["kb_tier"] = ("archive"
                                           if regex_anchors and
-                                          cand.classified_type == "incident"
+                                          cand.origin_kind == "agent"
                                           else "experience")
                     elif _llm_tier == "transcript":
                         # The LLM judged this a flow log / meeting note:
@@ -1155,7 +1173,7 @@ class _WriteSideState:
                     # partition self-confirms by default).
                     doc["kb_tier"] = ("archive"
                                       if regex_anchors and
-                                      cand.classified_type == "incident"
+                                      cand.origin_kind == "agent"
                                       else "experience")
                 # N2: non-experience routing docs (archive / transcript)
                 # are audit rows — they stay in staging as PENDING and
@@ -1377,19 +1395,32 @@ def _agent_in_decay_gate(result: dict, now_ts: float) -> bool:
     (needs_verification / falsified / absent) decays the item.
     """
     meta = result.get("metadata") or {}
+    # superseded_by drop (owner 2026-10-14, PRD §5): a confirmed doc a
+    # newer doc superseded is OUT of the auto-inject pool — it stays on
+    # disk (explicit get still reaches it) but is no longer auto-recalled.
+    # Checked BEFORE the premise_status gate: the two failure reasons are
+    # independent (a falsified AND superseded doc fails both, either one
+    # alone is enough to drop it).
+    if meta.get("superseded_by"):
+        return False
     if meta.get("premise_status") not in (True, "true"):
         return False
-    # B3 exemption branch (PRD v2-final): incident + project_ref +
-    # premise held -> the doc is a PROJECT ARCHIVE and is EXEMPT from
-    # the 14-day decay window — it stays in the auto-injection pool
-    # long-term (the archive tier's retrieval guarantee). The branch
-    # sits DELIBERATELY AFTER the premise_status check above (B3's
+    # B3 exemption branch (PRD v2-final): project-anchored agent docs
+    # (kb_class carries an independent anchor + project_ref + premise
+    # held) are PROJECT ARCHIVES and are EXEMPT from the 14-day decay
+    # window — they stay in the auto-injection pool long-term (the
+    # archive tier's retrieval guarantee). v2 (2026-10-14): the
+    # exemption keys off ANY origin_kind=agent doc carrying a
+    # project_ref (the old `kb_class == "incident"` key is retired —
+    # every v2 class lands in the agent partition now; legacy
+    # pre-v2 rows keep matching via origin_kind). The branch sits
+    # DELIBERATELY AFTER the premise_status check above (B3's
     # fail-closed ruling: a FALSIFIED premise is never exempted —
     # falsified archives exit the pool via set_premise_status's
     # downgrade path, not via this gate) and BEFORE the
     # reference_count / age checks (the exemption short-circuits both:
     # an archive must not decay just because nobody has cited it yet).
-    if (meta.get("kb_class") == "incident"
+    if (meta.get("origin_kind") == "agent"
             and meta.get("project_ref")
             and meta.get("premise_status") in (True, "true")):
         return True

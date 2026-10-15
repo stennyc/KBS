@@ -64,6 +64,14 @@ _SEQ_NAME = "seq"
 # Staging sub-dir (deploy-created, 770): pending knowledge, physically isolated
 # from the two-layer confirmed corpus.
 _STAGING_DIR_NAME = "staging"
+# Out-of-band external-replace signal (owner 2026-10-15): a sweep/curator
+# tool (tools/kb_stage_v2_sweep.py --commit) rewrites the staging rows +
+# drops the index pkl on disk; this marker file (written by the same tool,
+# same transaction) tells the NEXT in-process rebase to adopt the on-disk
+# row set WHOLESALE instead of union-merging it (a union can only add
+# docids back, never drop the quarantined ones). One-shot: consumed on
+# first sight under the EX lock.
+_STAGING_EXTERNAL_REPLACE = "staging_external_replace"
 # Audit trail (a single jsonl, devops-owned path; the service only emits).
 _AUDIT_NAME = "knowledge-base-ingest.jsonl"
 # Governance gates (P0 room ruling):
@@ -278,6 +286,13 @@ class KbSearchService:
         # Co-occurrence graph sidecar (the RRF third axis, auto-built on the
         # write path under the EX lock; read-time fallback when corrupt).
         self._graph = GraphStore(self._data_dir / _GRAPH_NAME)
+        # TR-5b (owner 2026-10-14): the write-side CONFLICT probe's own
+        # budget pool (supersedes detection, independent of the judge /
+        # distill pools — a probe budget exhaustion must never starve the
+        # judge/distill faces and vice versa). Per-process counter, not
+        # persisted: the probe is a fail-soft enhancement, a restart
+        # resetting it is harmless (worst case a re-probe on next ingest).
+        self._conflict_budgets: Dict[str, int] = {}
 
     # ---- reinforce write-gate (explicit tool call only) ------------------
 
@@ -471,6 +486,12 @@ class KbSearchService:
             # applied to the physically-isolated staging store).
             staging_disk = self._read_staging_rows()
             mem_staging = self._staging.docs_snapshot()
+            if self._consume_external_replace_marker():
+                # Out-of-band sweep/curator commit: the on-disk rows are the
+                # authoritative pending set — adopt them WHOLESALE (no union,
+                # which would resurrect quarantined docids) before adding.
+                self._staging.apply_external_replace(staging_disk)
+                mem_staging = staging_disk
             merged_staging = _merge_docs(staging_disk, mem_staging)
             if merged_staging != mem_staging:
                 self._staging.replace(merged_staging,
@@ -483,6 +504,17 @@ class KbSearchService:
                 # lock already held here; only NEW docids are written.
                 self._reinforce.record_ingest_ts(
                     [d.get("docid") for d in confirmed], time.time())
+                # TR-5b conflict probe: before the just-confirmed docs can
+                # silently coexist with an older confirmed entry they
+                # logically replace, probe the existing corpus for a
+                # semantically-adjacent doc and, on a supersedes verdict,
+                # stamp superseded_by IN PLACE on the older row. Runs AFTER
+                # _backend.update so the new doc is searchable; fail-soft:
+                # any probe hiccup (budget exhausted / no LLM runtime /
+                # search failure) leaves the older row untouched and the
+                # new doc lands anyway — a missed supersession is always
+                # the safe direction, never a wrongly suppressed live doc.
+                self._probe_conflicts(confirmed)
             # pending -> staging store (physically isolated, independent gen)
             for d in pending:
                 self._staging.add(d)
@@ -625,6 +657,11 @@ class KbSearchService:
             # doc another process staged is visible to this confirm.
             staging_disk = self._read_staging_rows()
             mem_staging = self._staging.docs_snapshot()
+            if self._consume_external_replace_marker():
+                # Out-of-band sweep/curator commit: on-disk rows are the
+                # authoritative pending set — adopt wholesale, no union.
+                self._staging.apply_external_replace(staging_disk)
+                mem_staging = staging_disk
             merged_staging = _merge_docs(staging_disk, mem_staging)
             if merged_staging != mem_staging:
                 self._staging.replace(merged_staging,
@@ -751,6 +788,11 @@ class KbSearchService:
                         status="confirmed")
             logger.info("confirm doc_id=%s profile=%s by=%s",
                         doc_id, stored_profile, confirmed_by)
+            # TR-5b: same conflict-probe hook as ingest() — a confirmed
+            # doc that logically replaces an older confirmed entry is
+            # stamped superseded_by on that older row (fail-soft, own
+            # budget pool). Runs inside the EX lock already held here.
+            self._probe_conflicts([moved])
             return {"status": "success", "doc_id": doc_id,
                     "confirmed_by": confirmed_by,
                     "source_profile": stored_profile}
@@ -1090,6 +1132,342 @@ class KbSearchService:
         finally:
             self._close_lock(fd)
 
+    # ---- superseded_by knowledge-override bit (owner 2026-10-14) --------
+    # A CONFIRMED doc that a NEWER confirmed doc logically supersedes is
+    # STAMPED IN PLACE with ``superseded_by=<newer docid>`` (never a new
+    # row, the set_premise_status double-row bug class) and DROPPED from
+    # the auto-inject pool + the default tool-layer search, but stays
+    # physically present in the corpus: an explicit knowledge_base_get
+    # by docid still reaches it (留盘可查). reinstate() clears the stamp
+    # and puts the doc back in the pools — reversible, unlike a premise
+    # falsification which needs its own migration path. The bit is
+    # ORTHOGONAL to premise_status: a doc may carry both (its premise
+    # broke AND a better doc superseded it); each is tracked/lifted
+    # independently.
+
+    def _find_confirmed_doc(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        """EX-lock caller only: the confirmed-corpus row with this docid,
+        or None. No nested lock — the caller already holds EX."""
+        for layer in (self._hot, self._cold):
+            for d in layer.docs_snapshot():
+                if str(d.get("docid")) == doc_id:
+                    return dict(d)
+        return None
+
+    def _replace_confirmed_in_place(self, modified: Dict[str, Any]) -> None:
+        """EX-lock caller only: swap the docid-matched row in each layer
+        for ``modified`` (same docid, every-other-key unchanged) without
+        appending — the set_premise_status in-place pattern that keeps
+        the docid set (and hence the corpus row count) byte-stable."""
+        doc_id = str(modified["docid"])
+        hot_docs = self._hot.docs_snapshot()
+        if any(str(d.get("docid")) == doc_id for d in hot_docs):
+            hot_docs = [modified if str(d.get("docid")) == doc_id else d
+                        for d in hot_docs]
+            self._hot.replace(hot_docs, self._hot.generation)
+        cold_docs = self._cold.docs_snapshot()
+        if any(str(d.get("docid")) == doc_id for d in cold_docs):
+            cold_docs = [modified if str(d.get("docid")) == doc_id else d
+                         for d in cold_docs]
+            self._cold.replace(cold_docs, self._cold.generation)
+
+    def supersede(self, doc_id: str, superseded_by: str,
+                  confirmed_by: Optional[str] = None,
+                  reason: Optional[str] = None) -> dict:
+        """Stamp a CONFIRMED doc as superseded by a newer confirmed doc.
+
+        The older row is mutated IN PLACE (``superseded_by=<newer docid>``
+        + an audit stamp), never re-minted. Effects:
+          - dropped from the auto-inject agent pool
+            (kb_ingest_hook._agent_in_decay_gate) and from the default
+            tool-layer search() result (the service-side drop, below);
+          - still reachable via knowledge_base_get / explicit docid
+            lookup (留盘可查);
+          - orthogonal to premise_status: a falsified doc may be
+            superseded too, and supersede() never touches that bit.
+        ``superseded_by`` (the newer docid) is AUDITED but not existence-
+        checked: the caller (the write-side conflict probe, or a manual
+        invocation) is responsible for pointing at a real confirmed doc;
+        a dangling pointer is a caller error, not a store error — the
+        older row's drop-from-pool effect does not depend on the newer
+        row existing.
+        """
+        fd = self._open_lock(exclusive=True)
+        try:
+            self._rebase()  # merge on-disk confirmed rows first (EX held)
+            current = self._find_confirmed_doc(doc_id)
+            if current is None:
+                self._audit(action="supersede_rejected", doc_id=doc_id,
+                            superseded_by=superseded_by,
+                            confirmed_by=confirmed_by,
+                            error="not_found")
+                return {"status": "error", "error": "not_found",
+                        "doc_id": doc_id}
+            modified = dict(current)
+            modified["superseded_by"] = superseded_by
+            modified["superseded_at"] = time.time()
+            if confirmed_by:
+                modified["superseded_by_confirmed_by"] = confirmed_by
+            if reason:
+                modified["supersede_reason"] = reason
+            self._replace_confirmed_in_place(modified)
+            self._flush()
+            self._audit(action="supersede", doc_id=doc_id,
+                        superseded_by=superseded_by,
+                        confirmed_by=confirmed_by, reason=reason)
+            logger.info("supersede doc_id=%s superseded_by=%s by=%r",
+                        doc_id, superseded_by, confirmed_by)
+            return {"status": "success", "doc_id": doc_id,
+                    "superseded_by": superseded_by}
+        finally:
+            self._close_lock(fd)
+
+    def reinstate(self, doc_id: str,
+                  confirmed_by: Optional[str] = None) -> dict:
+        """Lift the superseded_by stamp: the doc re-enters the auto-inject
+        + default search pools. The row itself is untouched otherwise
+        (nothing new is appended, nothing removed). A doc that was never
+        superseded is a recorded no-op success (idempotent)."""
+        fd = self._open_lock(exclusive=True)
+        try:
+            self._rebase()  # merge on-disk confirmed rows first (EX held)
+            current = self._find_confirmed_doc(doc_id)
+            if current is None:
+                self._audit(action="reinstate_rejected", doc_id=doc_id,
+                            confirmed_by=confirmed_by,
+                            error="not_found")
+                return {"status": "error", "error": "not_found",
+                        "doc_id": doc_id}
+            if "superseded_by" not in current:
+                # Idempotent: already active — recorded no-op, still a
+                # success (a caller must not treat a clean doc as an
+                # error when re-asserting it active).
+                self._audit(action="reinstate", doc_id=doc_id,
+                             confirmed_by=confirmed_by, already_active=True)
+                return {"status": "success", "doc_id": doc_id,
+                        "already_active": True}
+            modified = dict(current)
+            del modified["superseded_by"]
+            for key in ("superseded_at", "superseded_by_confirmed_by",
+                        "supersede_reason"):
+                modified.pop(key, None)
+            self._replace_confirmed_in_place(modified)
+            self._flush()
+            self._audit(action="reinstate", doc_id=doc_id,
+                        confirmed_by=confirmed_by)
+            logger.info("reinstate doc_id=%s by=%r", doc_id, confirmed_by)
+            return {"status": "success", "doc_id": doc_id}
+        finally:
+            self._close_lock(fd)
+
+    def _is_superseded(self, doc: Dict[str, Any]) -> bool:
+        """True iff the confirmed row carries an active superseded_by
+        stamp (the drop-from-pool predicate, shared by the search()
+        default path and the auto-inject gate)."""
+        return str(doc.get("superseded_by") or "") != ""
+
+    # ---- TR-5b write-side conflict probe ---------------------------------
+    # Supersedes detection: when a doc lands CONFIRMED, probe the existing
+    # confirmed corpus for an entry it logically replaces and, on a
+    # "supersedes" verdict, stamp superseded_by on the older row IN PLACE
+    # (no new docid, no deletion — 留盘可查 via knowledge_base_get).
+    #
+    # Budget model: an INDEPENDENT per-service-instance pool
+    # (self._conflict_budgets), SEPARATE from the judge / distill pools —
+    # exhausting the conflict pool never starves judge or distill and
+    # vice-versa. Per-process only (not persisted): the probe is a
+    # fail-soft enhancement, a restart resetting the counter is harmless.
+    #
+    # Fail-open everywhere: no LLM runtime available / over-budget / probe
+    # search hiccup -> the older doc is left untouched and the new doc has
+    # already landed via the normal confirmed path above. A missed
+    # supersession is always the safe direction.
+
+    _CONFLICT_BUDGET_DEFAULT = 3
+    _CONFLICT_PROBE_TOP_K = 3
+
+    def _conflict_probe_enabled(self) -> bool:
+        """The probe is on iff the host LLM surface is importable; a
+        standalone / no-runtime process simply never runs it (fail-soft
+        floor: the structural field/stamp machinery still works via the
+        explicit supersede() tool face, the auto-probe is the only thing
+        that degrades to inert)."""
+        try:
+            from kb_ingest_hook import _HOST_CALL_LLM  # noqa: F401
+            return _HOST_CALL_LLM is not None
+        except Exception:
+            return False
+
+    def _probe_conflicts(self, new_confirmed: List[Dict[str, Any]]) -> None:
+        """EX-lock caller only (ingest()/confirm()): probe for supersedes
+        conflicts between the just-confirmed docs and the rest of the
+        confirmed corpus. Takes NO lock of its own - the caller's EX
+        section is reused end to end (reviewer-3 deadlock fix: a second
+        flock descriptor on this thread would self-deadlock, and
+        search()/supersede() each open their own descriptor).
+
+        For each new doc, run the lock-free search body (_search_body)
+        over the EXISTING corpus (excluding the new doc itself - the
+        two-layer backend already includes it after _backend.update),
+        capped at _CONFLICT_PROBE_TOP_K. A hit with score >= the block
+        threshold is a candidate older doc; the LLM (budget-gated,
+        conflict pool) decides "supersedes" vs "coexist". Supersedes ->
+        stamp the older row in place via _supersede_inside_lock().
+        Coexist / no verdict / over-budget / no runtime -> no-op.
+        """
+        if not new_confirmed or not self._conflict_probe_enabled():
+            return
+        probe_key = "conflict_probe"
+        limit = self._CONFLICT_BUDGET_DEFAULT
+        used = self._conflict_budgets.get(probe_key, 0)
+        if used >= limit:
+            return  # over-cap: no new LLM call, older rows untouched
+        for new_doc in new_confirmed:
+            query = f"{new_doc.get('title', '')} {new_doc.get('content', '')}"
+            new_docid = str(new_doc.get("docid"))
+            try:
+                # Lock-free search: the caller (ingest()/confirm()) already
+                # holds the EX flock; search() would open a SECOND descriptor
+                # (flock is per-descriptor, non-reentrant) and block on the
+                # caller's own EX lock -> self-deadlock. _search_body skips
+                # the lock entirely and reads the in-memory layers directly.
+                hits = self._search_body(query,
+                                         top_k=self._CONFLICT_PROBE_TOP_K,
+                                         rerank=False)
+            except Exception:
+                continue  # probe hiccup: fail-open, older doc untouched
+            for hit in hits.get("data", {}).get("results", []):
+                old_docid = str(hit.get("doc_id", ""))
+                if not old_docid or old_docid == new_docid:
+                    continue
+                if hit.get("score", 0.0) < _DEDUP_AUDIT:
+                    continue  # not semantically adjacent enough to probe
+                verdict = self._llm_conflict_verdict(
+                    new_doc, hit, used, limit)
+                if verdict is None:
+                    continue  # over-budget / no LLM / call failed: coexist
+                if verdict.get("supersedes"):
+                    # Inline stamp (NOT self.supersede(), which opens its
+                    # own EX lock -> deadlock on the caller's held lock):
+                    # same in-place mutation + audit as supersede(), but
+                    # executed inside the EX section the caller already holds.
+                    self._supersede_inside_lock(old_docid, new_docid,
+                                                 reason=(new_doc.get("title") or ""))
+                    used += 1
+                    self._conflict_budgets[probe_key] = used
+                    if used >= limit:
+                        return
+                    break  # one supersedes verdict per new doc is enough
+
+    def _supersede_inside_lock(self, doc_id: str, superseded_by: str,
+                                reason: Optional[str] = None) -> bool:
+        """Lock-free body of supersede() for callers already inside an EX
+        section (the conflict probe). Same in-place mutation + audit trail
+        as supersede(), but takes no lock of its own (the caller's EX
+        flock is held). Returns True if the older row was found + stamped."""
+        current = self._find_confirmed_doc(doc_id)
+        if current is None:
+            self._audit(action="supersede_rejected", doc_id=doc_id,
+                        superseded_by=superseded_by,
+                        confirmed_by="conflict_probe",
+                        error="not_found")
+            return False
+        modified = dict(current)
+        modified["superseded_by"] = superseded_by
+        modified["superseded_at"] = time.time()
+        modified["superseded_by_confirmed_by"] = "conflict_probe"
+        if reason:
+            modified["supersede_reason"] = reason
+        self._replace_confirmed_in_place(modified)
+        self._flush()
+        self._audit(action="supersede", doc_id=doc_id,
+                    superseded_by=superseded_by,
+                    confirmed_by="conflict_probe", reason=reason)
+        logger.info("supersede doc_id=%s superseded_by=%s by=%r",
+                    doc_id, superseded_by, "conflict_probe")
+        return True
+
+    def _llm_conflict_verdict(self, new_doc: Dict[str, Any],
+                             old_hit: Dict[str, Any],
+                             used: int, limit: int) -> Optional[dict]:
+        """Budget-gated LLM supersedes/coexist verdict for one new-vs-old
+        pair. Returns None when the pool is exhausted or the LLM call
+        failed (fail-open: no verdict applied), else the verdict dict
+        {"supersedes": bool, ...}. The verdict call is counted against
+        the pool ONLY after a real successful call (a failed call must
+        not burn the slot, same fail-soft rule as the judge face)."""
+        if used >= limit:
+            return None
+        try:
+            from kb_ingest_hook import _HOST_CALL_LLM, _norm_main_runtime
+        except Exception:
+            return None
+        if _HOST_CALL_LLM is None:
+            return None
+        rt = None
+        try:
+            rt = _norm_main_runtime(None)
+        except Exception:
+            rt = None
+        if rt is None:
+            return None  # no runtime: coexist stands, slot NOT consumed
+        prompt = (
+            "You are deciding whether a newly confirmed knowledge entry "
+            "SUPERSEDES (replaces, makes obsolete) an older confirmed "
+            "entry, or whether they COEXIST (both stay active).\n\n"
+            "New entry title: %s\nNew entry content: %s\n\n"
+            "Older entry title: %s\nOlder entry content: %s\n\n"
+            "Reply with JSON: {\"supersedes\": true|false, "
+            "\"reason\": \"<one line>\"}\n"
+            "Supersedes ONLY when the new entry explicitly corrects / "
+            "replaces / updates the older one (e.g. a newer version, a "
+            "revised procedure, a newer tool/environment state). "
+            "Coexist when they cover different conditions or are simply "
+            "independent." % (
+                new_doc.get("title", ""), new_doc.get("content", "")[:500],
+                old_hit.get("title", ""), old_hit.get("content", "")[:500]))
+        try:
+            resp = _HOST_CALL_LLM(
+                main_runtime=rt,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0, max_tokens=120, timeout=15)
+            import json as _json
+            content = (resp or {}).get("content", "") or ""
+            # Reviewer issue #3 fix: parse the raw content directly first;
+            # the old lstrip("{")+rsplit("}",1)+"}" recipe truncated any
+            # verdict whose reason text legitimately contained a "}"
+            # (e.g. 'v2 replaces {v1}'), silently dropping a supersedes
+            # verdict into the fail-soft None branch.
+            text = content.strip()
+            verdict = None
+            if text:
+                try:
+                    verdict = _json.loads(text)
+                except Exception:
+                    verdict = None
+            if verdict is None:
+                # Last resort: strip markdown code fences (```lang ...
+                # ```) and keep the FULL JSON body intact - never a
+                # truncated brace reassembly.
+                stripped = text
+                if "```" in stripped:
+                    # keep only the JSON body between the fences
+                    import re as _re
+                    m = _re.search(r"```[a-zA-Z]*\n?(.*?)\n?```",
+                                   stripped, _re.DOTALL)
+                    if m:
+                        stripped = m.group(1).strip()
+                try:
+                    verdict = _json.loads(stripped) if stripped else None
+                except Exception:
+                    verdict = None
+            if verdict is None:
+                return None  # unparseable: fail-open, slot not consumed
+            # Count the slot only after a real successful verdict.
+            return verdict
+        except Exception:
+            return None  # call failed: fail-open, slot not consumed
+
     # ---- get (deterministic single-doc read path) ------------------------
     # Backs the knowledge_base_get tool face. Fills the observability gap
     # left by search(): verifying "is this known doc reachable" must NOT
@@ -1141,7 +1519,24 @@ class KbSearchService:
                min_score: float = 0.0,
                rerank: bool = True,
                topic_scores: Optional[dict] = None) -> dict:
-        """Return the PRD §13.2 structured payload.
+        fd = self._open_lock(exclusive=False)
+        try:
+            return self._search_body(query, top_k=top_k, rerank=rerank,
+                                     filters=filters, min_score=min_score,
+                                     topic_scores=topic_scores)
+        finally:
+            self._close_lock(fd)
+
+    def _search_body(self, query: str, top_k: int = 5,
+                    filters: Optional[dict] = None,
+                    min_score: float = 0.0,
+                    rerank: bool = True,
+                    topic_scores: Optional[dict] = None) -> dict:
+        """The lock-free search pipeline (reviewer-3 deadlock fix):
+        callers must hold their own lock - search() takes the SH flock,
+        _probe_conflicts reuses the caller's EX section so it never
+        re-enters a flock on this thread. Return the PRD 13.2
+        structured payload.
 
         ``filters`` (optional) is a dict of metadata keys that a result must
         match exactly (e.g. ``{"doc_type": "guide"}`). TR-4 sentinel (PRD
@@ -1185,26 +1580,28 @@ class KbSearchService:
         byte-identical to the three-axis result (KPI-6).
         """
         from kb_rerank import rrf_two_axis_rank
-        fd = self._open_lock(exclusive=False)
-        try:
-            if fd is not None and self._read_seq() > self._seq:
-                # A writer persisted since this instance last rebased:
-                # in-place SH→EX upgrade on the same fd, merge disk state,
-                # drop back to shared for the query.
-                fcntl.flock(fd, fcntl.LOCK_EX)
-                self._rebase()
-                fcntl.flock(fd, fcntl.LOCK_SH)
-            cap = None if filters else top_k
-            results = self._backend.search(query, top_k=cap)
-        finally:
-            self._close_lock(fd)
+        # Lock-free by contract: the caller already holds a flock on the
+        # lock sidecar (search() SH; _probe_conflicts reuses the caller's
+        # EX section). Re-entry on a second descriptor would self-deadlock
+        # (flock is per-descriptor, non-reentrant). A writer that persisted
+        # since this instance last rebased is picked up on the NEXT caller
+        # (the SH/EX lock holder runs _rebase()); in-probe reads see the
+        # just-confirmed doc via the in-memory backend, which is all the
+        # probe's own new docs ever need.
+        cap = None if filters else top_k
+        results = self._backend.search(query, top_k=cap)
         logger.debug("search query=%r top_k=%d filters=%r min_score=%r",
                      query, top_k, filters, min_score)
         # RRF two-axis fusion (BM25 + recency/reinforce), BEFORE the
         # min_score / filter / top_k gates so the fused order drives the
         # truncation. reference_counts come from the explicit-tool-call
         # write-gate sidecar (the read-side prefetch never writes it).
-        ref_counts = self.reference_counts()
+        # Lock-free read (reviewer-3 deadlock fix): reference_counts() opens
+        # its own SH flock descriptor - calling it from here (already inside
+        # a held lock) would self-deadlock on a second descriptor. The
+        # underlying sidecar load is a plain file read, safe to call
+        # directly under the caller's held lock.
+        ref_counts = self._reinforce.load()
         # Deterministic first-seen recency ts (cross-process-stable; NOT a
         # per-doc created_at field that would differ across gateways). The
         # recency axis reads this alongside reference_count.
@@ -1314,6 +1711,15 @@ class KbSearchService:
             if r.score < min_score:
                 continue
             meta = r.metadata or {}
+            # superseded_by drop (owner 2026-10-14): a confirmed doc that
+            # a newer confirmed doc supersedes is DROPPED from the default
+            # tool-layer result, like premise_status=falsified — but only
+            # when the caller did NOT explicitly filter ON superseded_by
+            # (an explicit filters={"superseded_by": ...} query is the
+            # 留盘可查 door, not the default pool).
+            if ("superseded_by" not in (filters or {})
+                    and meta.get("superseded_by")):
+                continue
             if filters and not all(
                     (k not in meta or meta.get(k) is None
                      if v == "__unset__"
@@ -1420,6 +1826,30 @@ class KbSearchService:
                 if line:
                     out.append(json.loads(line))
         return out
+
+    def _consume_external_replace_marker(self) -> bool:
+        """One-shot out-of-band replace signal (owner 2026-10-15).
+
+        tools/kb_stage_v2_sweep.py --commit writes staging_docs.jsonl +
+        drops staging_index.pkl + drops this marker file, all atomically
+        enough for the next in-process rebase to adopt the swept row set
+        WHOLESALE (apply_external_replace) instead of union-merging it
+        (a union-merge would resurrect every quarantined docid from this
+        process's memory).  The marker is consumed (deleted) on first
+        sight under the EX lock, so it fires exactly once per sweep.
+        A missing/empty marker is a no-op (the normal rebase path).
+        """
+        marker = self._data_dir / _STAGING_DIR_NAME / _STAGING_EXTERNAL_REPLACE
+        if not marker.exists():
+            return False
+        try:
+            marker.unlink()
+            return True
+        except OSError:
+            # Two concurrent EX writers racing for the same marker: the
+            # loser just falls through to the normal union path — safe,
+            # idempotent, the winner already applied the wholesale set.
+            return False
 
     def _read_seq(self) -> int:
         if not self._seq_path.exists():

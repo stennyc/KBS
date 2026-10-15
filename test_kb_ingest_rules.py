@@ -43,26 +43,30 @@ class TestDetector:
         rules = rules or merge_rules(None)
         return CandidateDetector(rules, session_id="s1", profile="coder")
 
-    def test_decision_cue_matches(self):
+    # v2 (2026-10-14): the 3 legacy content-form classes
+    # (decision / walkthrough / config) are RETIRED — they collided
+    # word-for-word with filemem's L2/L1/L0 trigger words. These three
+    # tests are flipped to REGRESSION assertions: the exact same inputs
+    # must now MISS the v2 rule set (a bare verdict / a fix narrative /
+    # a raw config dump carry no task-subject+premise structure). The
+    # v2 positive cases live in test_kb_ingest_rules_v2.py.
+    def test_decision_verdict_no_longer_recognized(self):
         d = self._det()
         text = "讨论了一圈，最终决定采用方案 B，否决了 A。"
         c = d.scan(text, lambda t, c_: "doc-x")
-        assert c is not None
-        assert c.classified_type == "decision"
+        assert c is None, "a bare verdict (no premise/condition) is filemem L2 territory"
 
-    def test_walkthrough_cue_matches(self):
+    def test_walkthrough_narrative_no_longer_recognized(self):
         d = self._det()
         text = "报错 no such table: activations，排查发现是迁移没跑，修复后正常。"
         c = d.scan(text, lambda t, c_: "doc-y")
-        assert c is not None
-        assert c.classified_type == "walkthrough"
+        assert c is None, "a root-cause->fix narrative is filemem L1 territory"
 
-    def test_config_cue_matches(self):
+    def test_config_dump_no_longer_recognized(self):
         d = self._det()
         text = "把这段配置片段存下来：\n```\nplugins:\n  enabled: [x]\n```"
         c = d.scan(text, lambda t, c_: "doc-z")
-        assert c is not None
-        assert c.classified_type == "config"
+        assert c is None, "a raw config dump carries no task-subject+premise structure"
 
     def test_no_cue_no_candidate(self):
         d = self._det()

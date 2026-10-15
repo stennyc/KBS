@@ -365,13 +365,15 @@ def test_write_side_on_turn_llm_budget_over_cap_keeps_regex():
     ctx = _Ctx()
     state = hook._WriteSideState(ctx)
     ref = [0]
-    fake = _FakeHostCall('{"worth": true, "kb_class": "decision"}', call_count_ref=ref)
+    fake = _FakeHostCall('{"worth": true, "kb_class": "premise"}', call_count_ref=ref)
     monkey = _Monkey()
     monkey.set(hook, "_HOST_CALL_LLM", fake)
     monkey.set(state, "_main_runtime", {"model": "m", "provider": "p"})
-    # Same session id across all 4 turns so the budget accumulates.
+    # Same session id across all 4 turns so the budget accumulates. The
+    # trigger text must hit a V2 cue (the pre-v2 "拍板" verdict text is
+    # retired from the default rule set — PRD §3).
     for i in range(4):
-        state.on_turn("s1", f"我们拍板最终方案 X{i} 落定", "user asking to decide")
+        state.on_turn("s1", f"前提：只在 7-gateway 场景 {i} 下才需要 X", "user")
     assert ref[0] == 3, f"expected 3 LLM calls under budget, got {ref[0]}"
     monkey.restore()
 
@@ -408,7 +410,7 @@ def test_llm_enabled_flag_off_disables_face():
     monkey = _Monkey()
     monkey.set(hook, "_HOST_CALL_LLM", fake)
     monkey.set(state, "_main_runtime", {"model": "m"})
-    state.on_turn("s0", "我们拍板最终方案", "decide")
+    state.on_turn("s0", "前提：只在 7-gateway 场景下才需要 flock", "decide")
     assert ref[0] == 0, "llm.enable=False must not call the host LLM"
     monkey.restore()
 
@@ -628,7 +630,7 @@ def test_distill_independent_budget_pool():
     # asserts the fail-soft retry-forever-until-successful-or-capped
     # semantic (a transient host hiccup must not permanently kill the face).
     for i in range(4):
-        state.on_turn("s1", f"我们拍板最终方案 X{i}", "user")
+        state.on_turn("s1", f"前提：只在 7-gateway 场景 {i} 下才需要 X", "user")
     assert global_calls[0] == 8, f"4 judge retries + 4 distill retries = 8, got {global_calls[0]}"
     # Neither pool advanced (no successful verdict consumed a slot).
     assert state._llm_calls_by_session.get("s1", 0) == 0

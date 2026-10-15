@@ -695,7 +695,11 @@ class B4BoundaryRoutingTests(unittest.TestCase):
 class B3ExemptionBranchTests(unittest.TestCase):
 
     def _meta(self, **over):
+        # v2 (2026-10-14): the B3 archive-tier exemption now keys off
+        # origin_kind=agent (every v2 class lands in the agent partition),
+        # not the retired kb_class=="incident" key.
         base = {"premise_status": True, "kb_class": "incident",
+                "origin_kind": "agent",
                 "project_ref": "repo:stennyc/KBS"}
         base.update(over)
         return base
@@ -906,6 +910,80 @@ class Note4StagingTTLTests(unittest.TestCase):
         store.sweep_stale(now_ts=None)
         self.assertEqual(store.sweep_stale(now_ts=None), [],
                          "a second sweep finds nothing to move")
+
+
+# ---------------------------------------------------------------------------
+# (9b) Out-of-band external-replace sync channel (owner 2026-10-15):
+#  a sweep/curator tool rewrites staging_docs.jsonl + drops the index
+#  pkl + drops the marker file; the next in-process rebase (ingest/
+#  confirm) must adopt the on-disk rows WHOLESALE instead of union-
+#  merging them (a union resurrects every quarantined docid this
+#  process still holds in memory).
+# ---------------------------------------------------------------------------
+class ExternalReplaceMarkerTests(unittest.TestCase):
+
+    def _svc(self):
+        svc, base, data, audit = _svc_with_audit()
+        return svc, data
+
+    def _pending_doc(self, docid, n=30):
+        return {"docid": docid, "title": f"标题 {docid}",
+                "content": "内容" * n, "status": "pending"}
+
+    def test_marker_consumed_on_next_ingest_adopts_disk_wholesale(self):
+        svc, data = self._svc()
+        svc.ingest([self._pending_doc("p-keep"), self._pending_doc("p-drop")])
+        self.assertEqual(svc._staging.size, 2)
+        # Simulate a sweep commit: rewrite the rows file down to the keep
+        # row, drop the index pkl, drop the marker.
+        rows_path = svc._staging.rows_path
+        with open(rows_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(self._pending_doc("p-keep"),
+                               ensure_ascii=False) + "\n")
+        idx = data / "staging" / "staging_index.pkl"
+        if idx.exists():
+            idx.unlink()
+        marker = data / "staging" / "staging_external_replace"
+        marker.write_text("sweep-test", encoding="utf-8")
+        # Next in-process rebase (any ingest) must adopt the 1-row disk set
+        # wholesale — NOT union the dropped row back in.
+        svc.ingest([self._pending_doc("p-new")])
+        ids = {str(d.get("docid")) for d in svc._staging.docs_snapshot()}
+        self.assertEqual(ids, {"p-keep", "p-new"},
+                         "quarantined p-drop must NOT be resurrected "
+                         "by the union rebase")
+        self.assertFalse(marker.exists(),
+                         "the marker is one-shot: consumed on first "
+                         "rebase, not re-fired")
+
+    def test_no_marker_keeps_union_semantics(self):
+        # Regression guard: WITHOUT a marker the pre-existing union
+        # rebase path is unchanged (disk rows still merge in).
+        svc, data = self._svc()
+        svc.ingest([self._pending_doc("p-1")])
+        svc.ingest([self._pending_doc("p-2")])
+        ids = {str(d.get("docid")) for d in svc._staging.docs_snapshot()}
+        self.assertEqual(ids, {"p-1", "p-2"})
+        marker = data / "staging" / "staging_external_replace"
+        self.assertFalse(marker.exists())
+
+    def test_confirm_path_consumes_marker_too(self):
+        # The same sync must fire on the confirm() rebase, not only
+        # ingest() — a confirm is the one op that moves a row OUT.
+        svc, data = self._svc()
+        svc.ingest([self._pending_doc("c-1"), self._pending_doc("c-2")])
+        rows_path = svc._staging.rows_path
+        with open(rows_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(self._pending_doc("c-1"),
+                               ensure_ascii=False) + "\n")
+        (data / "staging" / "staging_external_replace").write_text(
+            "sweep-test", encoding="utf-8")
+        svc.confirm("c-1", confirmed_by="owner")
+        ids = {str(d.get("docid")) for d in svc._staging.docs_snapshot()}
+        self.assertEqual(ids, set(),
+                         "after external-replace + confirm, c-2 (which "
+                         "the sweep quarantined) must not be back")
+
 
 
 # ---------------------------------------------------------------------------

@@ -117,6 +117,94 @@ def is_noise_title(title: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Meta-instruction / question noise gate (owner 2026-10-14 ruling: the 16
+# "keep" rows that are USER COMMANDS/QUESTIONS about the task itself —
+# "落盘计划prd", "开始吧", "这个怎么用？", "你给我一份提示词" — are NOT
+# knowledge; the v2 anti-pattern cue's 踩坑/坑 substring false-hits them.
+# A META row describes WHAT TO DO NEXT / ASKS THE AGENT TO DO SOMETHING;
+# a GENUINE row states a fact/experience/pattern independent of the
+# conversation. Conservative: only high-confidence meta shapes are blocked
+# (宁漏勿进) — any real knowledge snippet slips through.
+#
+# Two legs (both must be conservative):
+#   Leg 1: imperative task-assignment shapes ("总结并出具…", "落盘…",
+#          "开始吧…", "你给我一份…", "…试试看", "…再测试", "…忘了吗？")
+#   Leg 2: task-scoped questions ("这个怎么用？", "…有哪些…吗？",
+#          "…你有什么作用？", "…需要修复吗？") — a question about the
+#          immediate task, not a settled answer.
+# A settled statement ("拍板：用 Docker", "GitHub API Topics Patch 行为：…",
+# "KB 噪声候选全部没 confirm") is NOT meta — it asserts a fact/result,
+# regardless of whether it appears mid-conversation.
+# ---------------------------------------------------------------------------
+_META_INSTRUCTION_RE = re.compile(
+    r"(总结并出具|落盘计划|开始吧|你给我|我在新Session|试试看|"
+    r"可以再次测试|你先|帮我看|帮我检|帮我写|帮我查|帮我跑|"
+    r"叫\s*\w+\s*(进行复盘|复盘)|进行复盘|全绿才进入|"
+    r"认为还有|应该属于|还有哪些|你还有什么|"
+    r"存到你的知识库|存进知识库|作为经验|存到你的|"
+    r"我认为应该进行|我认为应该要|我认为应该|我们先来讨论|我们再来讨论|来讨论什么|我先来讨论)"
+)
+_META_QUESTION_RE = re.compile(
+    r"(这个怎么用|有哪些|有什么作用|需要修复吗|你觉得|你认为|是不是|"
+    r"忘了吗|中间我|为何每次|后面都要|有没有对应|可以用吗|能不能|"
+    r"可不可以|是否可以直接|为何不用)"
+)
+# Leg 2b: a title that opens with a question marker AND carries a
+# task-scoped phrasing anywhere in the line (not just at the end) is a
+# meta question even when it does not end in 吗/? — e.g. "需要修复吗？
+# 还有，为何每次调用 kb 工具后面都要使用 terminal".
+_META_OPENING_QUESTION_RE = re.compile(
+    r"^(?:还需要|需要|是否|能不能|可不可以|为什么|为何|是不是|有没有)"
+    r"\S{0,12}(吗|嘛|？|\?)"
+)
+# Leg 5: a title that OPENS a quoted conversation echo — user pasted a
+# previous assistant/user line verbatim (「…」 / “…” / <- 这不是…) and
+# asked about it — is a meta question about that pasted text, not a
+# settled knowledge statement. e.g. "“ • KB 噪声候选(…)” <- 这不是应该直接".
+# Conservative: only when the opening char is a CJK/curly quote AND the
+# line also carries a pasted-echo marker ("<- " / "这不是" / "这是" /
+# "应该是") somewhere within the title.
+_PASTED_ECHO_RE = re.compile(r"<\s*-|这不是|这是应该|应该是直接|应该pass")
+
+
+def is_meta_instruction(title: str) -> bool:
+    """True iff `title` (a staging row's first line) is a USER META
+    INSTRUCTION or TASK-SCOPED QUESTION rather than a settled knowledge
+    statement (owner 2026-10-14: 16/31 keep rows were meta noise).
+
+    Conservative (fail-open): only high-confidence shapes are blocked; a
+    genuine knowledge snippet ("拍板：用 X", "GitHub API Topics 行为：…")
+    returns False even mid-conversation. Used by the stage-2 sweep's
+    noise-guard leg AND as a read-side filter for confirmed rows whose
+    title is meta (the confirmed corpus should not auto-inject "开始吧").
+    Pure function, zero I/O.
+    """
+    title = (title or "").strip()
+    if not title:
+        return True
+    s = title.splitlines()[0].strip()
+    if not s:
+        return True
+    if _META_INSTRUCTION_RE.search(s):
+        return True
+    if _META_QUESTION_RE.search(s) and s.endswith(("吗", "呢", "?", "？", "吧")):
+        return True
+    if _META_OPENING_QUESTION_RE.match(s) and _META_QUESTION_RE.search(s):
+        return True
+    if re.search(r"^(?:为什么|为何)\S{0,14}\s*(?:而用|而非|不选)?[\S ]{0,20}(？|\?)", s):
+        return True
+    # Leg 5: pasted-echo question — title opens with a CJK/curly quote
+    # (user pasted a previous line verbatim) AND carries an echo marker.
+    if s and s[0] in "\u201c\u300c\u3009" and _PASTED_ECHO_RE.search(s):
+        return True
+    # Leg 6: title opens with a conversational correction ("不是，是…" /
+    # "对，是…") — user mid-argument, not a knowledge statement.
+    if re.match(r"^(?:不是|对|嗯)，?\s*是", s):
+        return True
+    return False
+
+
 def is_trivial_query(text: str) -> bool:
     """True iff `text` is too thin to be worth a knowledge-base search.
 
@@ -143,68 +231,86 @@ DEFAULT_RULES: dict = {
     # Trigger: at a session boundary OR when this many candidates have
     # accumulated for the session, whichever comes first.
     "clarify_batch_size": 5,
-    # The 3 narrow classes (reviewer "先窄后宽"). Each rule: a label plus
-    # the keyword/regex cues that mark a turn as carrying that knowledge.
+    # ------------------------------------------------------------------
+    # v2 rule set (2026-10-14, PRD §3): agent personal-knowledge classes
+    # ONLY. The 3 legacy content-form classes (decision / walkthrough /
+    # config) are DELIBERATELY GONE — they collide word-for-word with
+    # filemem's L2/L1/L0 trigger words (拍板/决策/选定, 修复/解决/经验,
+    # 配置/路径/端口) and re-recognize the same sentences a second time.
+    #
+    # All 4 classes carry origin_kind=agent (agent-experience partition,
+    # same-profile self-confirm, no clarify human gate — the TR-9
+    # ruling that used to apply to `incident` only now applies to the
+    # whole v2 rule set).
+    #
+    # Structural cue design (owner 2026-10-14 ruling: "结构判据，非弱
+    # cue"): a candidate must carry a TASK SUBJECT + a PREMISE/
+    # CONDITION + REUSABILITY, not just an incidental-marker word.
+    # The regex cues are therefore compound patterns (subject+condition
+    # glued into one cue), deliberately fewer and heavier than the old
+    # single-word cues. The budget-gated LLM judge face downstream
+    # (DEFAULT_RULES["llm"]) remains the final gate; a regex miss stays
+    # a miss (宁漏勿进).
+    #
+    # Explicit exclusions (PRD §3.2) are enforced two ways:
+    #   (1) the v2 compound cues simply do not match them — a bare
+    #       verdict ("我们拍板用 X 方案"), a short command/question
+    #       head (also caught upstream by is_noise_title), or a raw
+    #       config dump carries no task-subject+premise structure;
+    #   (2) test_kb_ingest_rules_v2.py pins them as regression
+    #       samples that must MISS every v2 cue.
+    # ------------------------------------------------------------------
     "rules": [
         {
-            "id": "decision",
-            "label": "决策结论",
-            # "拍板 / 决定 / 最终采用 / 不做 X" style close-out lines.
+            "id": "pattern",
+            "label": "可迁移套路",
+            # Reusable strategies distilled from (multiple) tasks:
+            # "in the X scenario, always/preferably Y" — a standing
+            # play, not a one-off verdict (that last one is filemem's
+            # L2 territory and must NOT match here).
             "cues": [
-                r"决定采用", r"拍板", r"最终方案", r"不做", r"否决",
-                r"我们决定", r"结论是", r"approved", r"decided",
+                r"凡是.{0,30}(场景|情况|任务).{0,20}(一律|优先|都|建议)",
+                r"(套路|做法|经验)[:：]\s*\S{0,10}(在|适用于|用于)",
+                r"遇到.{0,30}(时|的时候|场景).{0,20}都(?:该|应|要|优先)",
+                r"play\s+book|reusable\s+(?:approach|pattern)",
+                r"通用(?:做法|套路|方法)",
             ],
         },
         {
-            "id": "walkthrough",
-            "label": "踩坑排查路径",
-            # error -> root-cause -> fix narratives.
+            "id": "anti-pattern",
+            "label": "反模式陷阱",
+            # Negative knowledge: "doing X under condition Y causes
+            # trouble Z" — a trap with an explicit cause/condition.
             "cues": [
-                r"根因", r"排查", r"报错.*解法", r"修复了", r"踩坑",
-                r"workaround", r"root cause", r"fixed by",
+                r"不要.{0,20}(因为|会|容易|导致|让)",
+                r"(踩坑|陷阱|坑|gotcha)[:：]",
+                r"反模式|anti-?pattern",
+                r"切勿.{0,20}(会|导致|容易)",
             ],
         },
         {
-            "id": "config",
-            "label": "可复用配置片段",
-            # reusable snippets / exact config blocks worth re-using.
+            "id": "tool-quirk",
+            "label": "工具环境脾气",
+            # Behavior boundaries / quirks of a NAMED tool, command,
+            # API or environment, ideally with a version/condition.
             "cues": [
-                r"```", r"配置片段", r"config\b", r"environment",
-                r"settings\.yaml", r"plugin\.yaml", r"requirements\.txt",
+                r"限制[:：].{0,10}(在|当|版本)",
+                r"(工具|命令|接口|API|库).{0,25}(限制|怪|行为|坑|不支持|必须)",
+                r"v?\d[\d.]*\s*版本.{0,20}(限制|怪|行为|坑|必须|不支持)",
+                r"quirk|behaviou?r\s+(?:limit|bound|quirk)",
             ],
         },
         {
-            "id": "incident",
-            "label": "边角经验事实",
-            # TR-9 (G7): task-incidental "边角事实" — a small fact or
-            # gotcha learned in passing during a task, NOT a settled
-            # decision / a multi-step walkthrough / a reusable config
-            # snippet. Examples: "git PAT 当 Bearer 调 REST 可以，gh
-            # 却没登录" (an API corner-case fact), "这个接口的
-            # 顺带发现一个限制" (a boundary fact discovered as a
-            # by-product). The cues are phrases that mark such
-            # incidental observations, distinct from the 3 legacy
-            # classes' close-out / narrative / snippet patterns.
-            #
-            # Why these specific cues:
-            #   - "顺带" / "顺便" / "incidental" / "by the way":
-            #     direct markers of "learned in passing", not a focused
-            #     decision or config.
-            #   - "发现一个" / "发现了一个" / "discovered that":
-            #     a small factual observation, not a root-cause
-            #     narrative (walkthrough) or a verdict (decision).
-            #   - "边角" / "corner case" / "gotcha":
-            #     explicit "edge fact" vocabulary.
-            #   - "API 细节" / "API 边角":
-            #     API-specific micro-facts (e.g. auth quirks, rate
-            #     limits) that don't fit the 3 legacy classes.
-            #   - "限制" / "限制是" / "limitation":
-            #     a learned boundary/limit fact, not a fix narrative.
+            "id": "premise",
+            "label": "前提条件经验",
+            # Experiences whose validity carries an explicit applicable
+            # premise ("when P holds, E is usable") — the class that
+            # feeds the KB `premise`/`premise_status` fields and the
+            # supersession machinery (PRD §5).
             "cues": [
-                r"顺带", r"顺便", r"incidental", r"by the way",
-                r"发现一个", r"发现了一个", r"discovered that",
-                r"边角", r"corner case", r"gotcha",
-                r"API 细节", r"API 边角", r"limitation",
+                r"前提[:：]\S{0,10}(只在|当|在|满足)",
+                r"适用(?:范围|条件|前提)[:：]",
+                r"premise[:：]\s*\S{0,12}(holds|applies)",
             ],
         },
     ],
@@ -293,18 +399,22 @@ def merge_rules(overrides: Optional[dict]) -> dict:
 class Candidate:
     """One sinking-worthy turn classified by the rule engine."""
     doc_id: str                 # deterministic content-addressed id (from kb_service)
-    classified_type: str        # "decision" | "walkthrough" | "config" | "incident"
+    classified_type: str        # v2: "pattern" | "anti-pattern" | "tool-quirk"
+                                 #       | "premise" (legacy profiles may still
+                                 #       carry decision/walkthrough/config/incident)
     label: str
     title: str
     content: str
     source_session_id: str
     source_profile: Optional[str] = None
     cue_hits: list = field(default_factory=list)
-    # TR-9: origin_kind marker — "agent" when the rule hit is a task-incidental
-    # "边角经验事实" (incident), None for the 3 legacy rules (decision /
-    # walkthrough / config) which stay the auto-partition default.
-    # Backward-compatible: existing callers that don't pass origin_kind get
-    # None, which the write-side hook treats as "legacy auto" (no change).
+    # PRD §3 (2026-10-14): "agent" for EVERY v2 rule hit (all four v2
+    # classes land in the agent-experience partition, same-profile
+    # self-confirm, no clarify human gate — the TR-9 ruling extended
+    # from `incident`-only to the whole v2 rule set). None = a legacy
+    # rule id from a stale profile override (decision / walkthrough /
+    # config / incident), which keeps the pre-v2 "auto" partition
+    # default (backward-compat backstop, see _AGENT_RULE_IDS note).
     origin_kind: Optional[str] = None
     # PRD v2-final TR-1 (note 3): project repo reference — a controlled
     # vocabulary of git remote names ("repo:stennyc/KBS" etc.). Set by the
@@ -326,11 +436,21 @@ class CandidateDetector:
     content, no schema migration needed).
     """
 
-    # TR-9: the rule id that maps to the agent origin_kind partition.
-    # Only `incident` (边角经验事实) carries origin_kind=agent; the 3
-    # legacy rules (decision / walkthrough / config) stay origin_kind=None
-    # (auto-partition default) — backward-compatible, no behavior change.
-    _AGENT_RULE_IDS = frozenset({"incident"})
+    # PRD §3 (2026-10-14): EVERY v2 rule id maps to the agent
+    # origin_kind partition — agent personal-knowledge classes carry
+    # origin_kind=agent (agent-experience partition, same-profile
+    # self-confirm, no clarify human gate). This replaces the TR-9
+    # single-`incident` marker: the whole v2 rule set is agent-side.
+    # Legacy rule ids (decision / walkthrough / config / incident) are
+    # no longer part of DEFAULT_RULES, but profiles that still carry a
+    # pre-v2 `kb_ingest.rules` override (merge_rules is merge-not-
+    # replace) can re-introduce them — a non-v2 id then falls back to
+    # origin_kind=None ("auto", the pre-TR-9 backstop) so a stale
+    # profile config degrades safely instead of silently re-opening the
+    # legacy path.
+    _AGENT_RULE_IDS = frozenset({
+        "pattern", "anti-pattern", "tool-quirk", "premise",
+    })
 
     def __init__(self, rules: dict, session_id: str, profile: Optional[str]):
         self._rules = rules

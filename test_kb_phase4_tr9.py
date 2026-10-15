@@ -174,43 +174,51 @@ class TR9IncidentRuleHitTests(unittest.TestCase):
     origin_kind='agent' when the text contains incident cues but NONE
     of the decision / walkthrough / config cues."""
 
-    def test_incident_cue_produces_agent_origin_kind(self):
+    def test_premise_cue_produces_agent_origin_kind(self):
+        """v2 (2026-10-14): the v2 rule set replaces the retired
+        `incident` class. A premise-structure text produces a candidate
+        with origin_kind='agent' (every v2 class lands in the agent
+        partition) — the TR-9 ruling extended from incident-only to
+        the whole v2 rule set."""
         rules = merge_rules(None)
         det = CandidateDetector(rules, session_id="s1", profile="coder")
-        # Pure edge-fact: contains incident cues ("顺带", "发现一个", "API 细节")
-        # but NO decision cue ("决定采用"/"拍板"), NO walkthrough cue
-        # ("根因"/"排查"/"踩坑"), NO config cue ("```"/"配置片段").
-        text = "顺带发现一个 API 细节：这个接口的 rate limit 是每分钟 10 次，" \
-               "超限就 429，跟文档里写的不一样。"
+        text = "前提：只在 7-gateway 场景下才需要 flock 跨进程 rebase。"
         c = det.scan(text, lambda t, c_: "doc-a")
-        self.assertIsNotNone(c, "incident cue should produce a candidate")
-        self.assertEqual(c.classified_type, "incident")
+        self.assertIsNotNone(c, "v2 premise cue should produce a candidate")
+        self.assertEqual(c.classified_type, "premise")
         self.assertEqual(c.origin_kind, "agent",
-                         "incident rule must mark origin_kind='agent'")
+                         "v2 rules must mark origin_kind='agent'")
 
-    def test_incident_cue_no_legacy_cue_overlap(self):
-        """A text with ONLY incident cues (no legacy cues) is classified
-        as incident, not as decision / walkthrough / config."""
+    def test_v2_cue_no_legacy_cue_overlap(self):
+        """v2: a text carrying ONLY v2 structure (task-subject + premise)
+        is classified as a v2 class, never as a legacy class — the
+        legacy cue sets are retired from DEFAULT_RULES (PRD §3.1)."""
         rules = merge_rules(None)
         det = CandidateDetector(rules, session_id="s1", profile="coder")
-        # This text has "发现一个" (incident cue) but no decision /
-        # walkthrough / config cues.
-        text = "发现一个限制：这个 SDK 不支持流式响应，只能等完整响应。"
+        text = "适用范围：agent 经验条目 14 天内未引用即衰减折出自动注入池。"
         c = det.scan(text, lambda t, c_: "doc-a2")
         self.assertIsNotNone(c)
-        self.assertEqual(c.classified_type, "incident",
-                         "a pure edge-fact with no legacy cues must be "
-                         "classified as incident, not legacy")
+        self.assertEqual(c.classified_type, "premise",
+                         "a v2-structured text must classify as a v2 class, "
+                         "not a legacy one")
         self.assertEqual(c.origin_kind, "agent")
 
-    def test_incident_rule_id_in_default_rules(self):
-        """The incident rule must be in DEFAULT_RULES (not just in the
-        merged config), so profiles that configure nothing get it."""
+    def test_v2_rule_ids_in_default_rules(self):
+        """v2: the 4 v2 rule ids must be in DEFAULT_RULES (not just in
+        the merged config), so profiles that configure nothing get them.
+        The 3 legacy content-form ids (decision / walkthrough / config)
+        and the retired incident id are GONE from the default set."""
         rule_ids = [r["id"] for r in DEFAULT_RULES["rules"]]
-        self.assertIn("incident", rule_ids,
-                      "incident rule must be in DEFAULT_RULES")
+        for v2 in ("pattern", "anti-pattern", "tool-quirk", "premise"):
+            self.assertIn(v2, rule_ids,
+                          f"v2 rule {v2!r} must be in DEFAULT_RULES")
         self.assertEqual(len(rule_ids), 4,
-                         "exactly 4 rules: decision / walkthrough / config / incident")
+                         "exactly 4 v2 rules: pattern / anti-pattern / "
+                         "tool-quirk / premise")
+        for legacy in ("decision", "walkthrough", "config", "incident"):
+            self.assertNotIn(legacy, rule_ids,
+                             f"legacy rule {legacy!r} must be retired "
+                             f"from DEFAULT_RULES (PRD §3.1)")
 
 
 # ---------------------------------------------------------------------------
@@ -225,32 +233,52 @@ class TR9LegacyRuleBackwardCompatTests(unittest.TestCase):
         return CandidateDetector(merge_rules(None), session_id="s1",
                                  profile="coder")
 
-    def test_decision_cue_origin_kind_is_none(self):
+    def test_decision_cue_no_longer_recognized(self):
+        """v2: a bare verdict (no premise/condition) is filemem L2
+        territory and must NOT produce a v2 candidate."""
         c = self._det().scan(
             "讨论了一圈，最终决定采用方案 B，否决了 A。",
             lambda t, c_: "doc-b1")
-        self.assertIsNotNone(c)
-        self.assertEqual(c.classified_type, "decision")
-        self.assertIsNone(c.origin_kind,
-                          "legacy decision rule must NOT set origin_kind")
+        self.assertIsNone(c,
+                          "a bare verdict must not hit any v2 cue")
 
-    def test_walkthrough_cue_origin_kind_is_none(self):
+    def test_walkthrough_cue_no_longer_recognized(self):
+        """v2: a root-cause->fix narrative is filemem L1 territory."""
         c = self._det().scan(
             "报错 no such table，排查发现是迁移没跑，修复后正常。",
             lambda t, c_: "doc-b2")
-        self.assertIsNotNone(c)
-        self.assertEqual(c.classified_type, "walkthrough")
-        self.assertIsNone(c.origin_kind,
-                          "legacy walkthrough rule must NOT set origin_kind")
+        self.assertIsNone(c,
+                          "a fix narrative must not hit any v2 cue")
 
-    def test_config_cue_origin_kind_is_none(self):
+    def test_config_cue_no_longer_recognized(self):
+        """v2: a raw config dump carries no task-subject+premise
+        structure and must not hit any v2 cue."""
         c = self._det().scan(
             "把这段配置片段存下来：\n```\nplugins:\n  enabled: [x]\n```",
             lambda t, c_: "doc-b3")
-        self.assertIsNotNone(c)
-        self.assertEqual(c.classified_type, "config")
+        self.assertIsNone(c,
+                          "a raw config dump must not hit any v2 cue")
+
+    def test_stale_profile_override_reintroduces_legacy_with_auto_origin_kind(self):
+        """v2 backstop: a stale pre-v2 profile override that re-introduces
+        a legacy rule id (decision / walkthrough / config cues) still
+        works, but the legacy id is NOT in _AGENT_RULE_IDS so the
+        candidate degrades to origin_kind=None ("auto" partition),
+        never silently re-entering the agent partition."""
+        rules = merge_rules({
+            "rules": [
+                {"id": "decision", "label": "决策结论",
+                 "cues": [r"决定采用", r"拍板"]},
+            ],
+        })
+        det = CandidateDetector(rules, session_id="s1", profile="coder")
+        c = det.scan("最终拍板用 X。", lambda t, c_: "doc-b4")
+        self.assertIsNotNone(c,
+                             "a legacy override's cues must still match")
+        self.assertEqual(c.classified_type, "decision")
         self.assertIsNone(c.origin_kind,
-                          "legacy config rule must NOT set origin_kind")
+                          "a legacy rule id must degrade to the auto "
+                          "partition (origin_kind=None), never agent")
 
     def test_candidate_default_origin_kind_is_none(self):
         """A Candidate constructed without the origin_kind field (existing
@@ -292,14 +320,15 @@ class TR9IncidentSelfConfirmTests(unittest.TestCase):
             profile="coder", session="s-inc",
         )
 
-        # Simulate the incident path: stage + self-confirm (no clarify).
-        # We drive the on_turn path with a text that hits the incident cue.
+        # Simulate the agent-partition path: stage + self-confirm (no
+        # clarify). We drive the on_turn path with a text that hits a V2
+        # cue (the retired `incident` cue no longer exists — PRD §3).
         old_profile = _set_env_profile("coder")
         try:
             state.on_turn(
                 "s-inc",
-                "顺带发现一个 API 细节：这个接口的 rate limit 是每分钟 10 次，"
-                "超限就 429，跟文档里写的不一样。"
+                "限制：这个 SDK 在 3.x 版本下不支持流式响应，"
+                "必须改用 v4 的 async 接口。"
                 "甲乙丙丁戊己庚辛壬癸甲乙丙丁戊己庚辛壬癸",
                 "user asked about rate limit behavior",
             )

@@ -94,6 +94,11 @@ DISTILL_INSTRUCTIONS = (
     "  3. The model does not know it at all (project-internal fact, "
     "local decision, config snippet that only applies here): distill to a "
     "minimal self-contained unit (2-6 lines, or a short checklist).\n"
+    "  The v2 agent-knowledge classes (reusable strategy / anti-pattern "
+    "trap / tool-quirk / premise-conditioned experience) all follow rule "
+    "2 or 3: keep the premise/condition explicit in the distilled unit — "
+    "a premise-less distill loses the applicability boundary the class "
+    "exists to carry.\n"
     "Never hallucinate — only restate what is in the input. Prefer fewer, "
     "sharper lines over coverage. Output JSON:"
 )
