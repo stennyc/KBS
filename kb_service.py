@@ -1270,6 +1270,79 @@ class KbSearchService:
         finally:
             self._close_lock(fd)
 
+    def set_doc_kind(self, doc_id: str,
+                     new_doc_kind: Optional[str]) -> dict:
+        """Re-label a CONFIRMED doc's ``doc_kind`` IN PLACE (same docid,
+        every-other-key untouched) — the one supported path for moving
+        a legacy unlabeled doc into a new doc_kind door without re-
+        minting its docid (re-minting would trip the B2 containment
+        near-dup gate; this one doesn't, because B2 only runs on
+        ingest()'s fresh-content path, never on an in-place replace).
+
+        ``new_doc_kind`` must be a ``kb_ingest_rules.DOC_KIND_VOCAB``
+        value or None (None = clear the label, back to "unlabeled").
+        Out-of-vocab values are rejected + audited, NOT silently
+        accepted (the same clarity semantics as topic_search's
+        invalid_topic — the caller must fix its input rather than read
+        a misleading result).
+
+        INVARIANT: the doc's ``docid`` key is NEVER recomputed here —
+        the row is mutated in place and re-persisted under the same
+        docid (the set_premise_status in-place pattern,
+        _replace_confirmed_in_place, docid-keyed list swap, never
+        append). No B2 gate, no _normalize_docs re-run (which would
+        setdefault the other keys and shift the uuid5 input).
+
+        Skeleton: EX lock + rebase + in-place replace + flush + audit.
+        No staging persist (the doc is confirmed corpus, not staging).
+        """
+        from kb_ingest_rules import DOC_KIND_VOCAB
+        doc_id = str(doc_id or "").strip()
+        if not doc_id:
+            return {"status": "error", "error": "doc_id required"}
+        # Validate the target value up front (cheap, no lock needed).
+        if new_doc_kind is not None and new_doc_kind not in DOC_KIND_VOCAB:
+            self._audit(action="doc_kind_change_rejected", doc_id=doc_id,
+                        to=new_doc_kind,
+                        error="invalid_doc_kind",
+                        reason=(f"doc_kind must be one of "
+                                f"{list(DOC_KIND_VOCAB)} or null"))
+            return {"status": "error", "error": "invalid_doc_kind",
+                    "doc_id": doc_id,
+                    "value": new_doc_kind,
+                    "allowed": list(DOC_KIND_VOCAB)}
+        fd = self._open_lock(exclusive=True)
+        try:
+            self._rebase()
+            current = self._find_confirmed_doc(doc_id)
+            if current is None:
+                self._audit(action="doc_kind_change_rejected",
+                            doc_id=doc_id, to=new_doc_kind,
+                            error="not_found")
+                return {"status": "error", "error": "not_found",
+                        "doc_id": doc_id}
+            from_kind = current.get("doc_kind")
+            modified = dict(current)
+            if new_doc_kind is None:
+                # Clear the label: drop the key entirely (absent == None
+                # under the B1 None-filter, so this is byte-identical to
+                # leaving a None-valued key in place — but physically
+                # absent is the canonical "unlabeled" spelling).
+                modified.pop("doc_kind", None)
+            else:
+                modified["doc_kind"] = new_doc_kind
+            self._replace_confirmed_in_place(modified)
+            self._flush()
+            self._audit(action="doc_kind_change", doc_id=doc_id,
+                        from_kind=from_kind, to=new_doc_kind)
+            logger.info("set_doc_kind doc_id=%s %r -> %r",
+                        doc_id, from_kind, new_doc_kind)
+            return {"status": "success", "doc_id": doc_id,
+                    "from_kind": from_kind,
+                    "to": new_doc_kind}
+        finally:
+            self._close_lock(fd)
+
     def _is_superseded(self, doc: Dict[str, Any]) -> bool:
         """True iff the confirmed row carries an active superseded_by
         stamp (the drop-from-pool predicate, shared by the search()

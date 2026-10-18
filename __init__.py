@@ -609,6 +609,67 @@ def _share_to_global_handler(args: dict, **kwargs) -> str:
     return json.dumps(out, ensure_ascii=False)
 
 
+SET_DOC_KIND_SCHEMA = {
+    "name": "knowledge_base_set_doc_kind",
+    "description": (
+        "Re-label a CONFIRMED knowledge-base doc's doc_kind IN PLACE "
+        "(same docid, every other key untouched) — the supported path "
+        "for moving a legacy unlabeled doc into a new doc_kind door "
+        "without re-minting its docid (re-minting the same content "
+        "would trip the B2 near-duplicate gate; this one does not, "
+        "because it never goes through ingest()'s content path). "
+        "doc_kind must be one of kb_ingest_rules.DOC_KIND_VOCAB "
+        "(experience / tutorial / reference) or null to CLEAR the "
+        "label (back to unlabeled). Out-of-vocabulary values are "
+        "rejected and audited, not silently accepted. The doc's "
+        "docid is never recomputed — the row is mutated in place and "
+        "re-persisted under the same docid (the proven "
+        "set_premise_status in-place pattern). Returns "
+        "{status, doc_id, from_kind, to} on success; "
+        "{status:'error', error} on not_found / invalid_doc_kind."),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "doc_id": {
+                "type": "string",
+                "description": (
+                    "The content-addressed docid of the confirmed doc "
+                    "to re-label."
+                ),
+            },
+            "doc_kind": {
+                "type": ["string", "null"],
+                "enum": ["experience", "tutorial", "reference", None],
+                "description": (
+                    "The new document-SHAP label. 'experience' = "
+                    "retrospective pitfall/post-mortem; 'tutorial' = "
+                    "forward-looking followable procedure (SOP/"
+                    "runbook); 'reference' = pure reference fact. "
+                    "Pass null to clear the label (back to "
+                    "unlabeled). Must be a DOC_KIND_VOCAB value or "
+                    "null; anything else is rejected."
+                ),
+            },
+        },
+        "required": ["doc_id", "doc_kind"],
+    },
+}
+
+
+def _set_doc_kind_handler(args: dict, **kwargs) -> str:
+    """Narrow tool face: re-label one confirmed doc's doc_kind in
+    place. Exactly two knobs (doc_id + new value), no batch, no other
+    fields — the service method enforces vocab validation + the
+    in-place invariant and writes every outcome to the existing audit
+    trail."""
+    svc = _svc()
+    doc_id = str(args.get("doc_id", "")).strip()
+    new_doc_kind = args.get("doc_kind")  # None means "clear the label"
+    out = svc.set_doc_kind(doc_id, new_doc_kind)
+    svc.persist()  # make the in-place mutation durable across restarts
+    return json.dumps(out, ensure_ascii=False)
+
+
 GET_SCHEMA = {
     "name": "knowledge_base_get",
     "description": (
@@ -695,6 +756,13 @@ def register(ctx):
         schema=SHARE_TO_GLOBAL_SCHEMA,
         handler=_share_to_global_handler,
         emoji="🌐",
+    )
+    ctx.register_tool(
+        name="knowledge_base_set_doc_kind",
+        toolset="knowledge-base-search",
+        schema=SET_DOC_KIND_SCHEMA,
+        handler=_set_doc_kind_handler,
+        emoji="🏷️",
     )
     ctx.register_tool(
         name="knowledge_base_get",
