@@ -49,6 +49,27 @@ TOPIC_VOCAB: tuple = (
     "general",
 )
 
+# ---------------------------------------------------------------------------
+# doc_kind vocabulary (orthogonal document-SHAP axis, NOT a task-domain
+# axis like TOPIC_VOCAB — the same doc may carry topic="deployment" AND
+# doc_kind="tutorial"; the two axes are independent filters combined by
+# AND in search()). Three values:
+#   experience — retrospective pitfall / post-mortem (the default semantic
+#                home of origin_kind=agent docs, but NOT back-filled;
+#                docs that omit doc_kind stay doc_kind=None = unlabeled)
+#   tutorial   — forward-looking, followable procedure (SOP / runbook /
+#                troubleshooting guide): "unused until needed, look it up
+#                then search" long-tail reference material
+#   reference  — pure reference fact (no judgement, no steps)
+# As with TOPIC_VOCAB: a controlled enum — do not invent new values;
+# extend via owner review only.
+# ---------------------------------------------------------------------------
+DOC_KIND_VOCAB: tuple = (
+    "experience",
+    "tutorial",
+    "reference",
+)
+
 
 # ---------------------------------------------------------------------------
 # Read-side trivial-query gate (data-engineer contract, reviewer issue 3):

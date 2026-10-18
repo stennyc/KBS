@@ -138,8 +138,12 @@ SEARCH_SCHEMA = {
                     "match rows whose source_profile key is physically "
                     "absent OR null-valued (B1 None-filter sentinel). "
                     "Other filter keys (origin_kind, topic, premise_status, "
-                    "kb_class) use exact-equality or the '__unset__' "
-                    "sentinel (matches key-absent OR value-None)."),
+                    "kb_class, doc_kind) use exact-equality or the "
+                    "'__unset__' sentinel (matches key-absent OR "
+                    "value-None). doc_kind is the document-shape axis "
+                    "(experience/tutorial/reference, orthogonal to "
+                    "topic's task-domain axis — AND-filtered, see "
+                    "kb_ingest_rules.DOC_KIND_VOCAB)."),
             },
             "min_score": {
                 "type": "number",
@@ -224,6 +228,27 @@ INGEST_SCHEMA = {
                                 "'coder', 'devops'). Optional; when "
                                 "omitted the doc is a shared/global "
                                 "entry."
+                            ),
+                        },
+                        "doc_kind": {
+                            "type": ["string", "null"],
+                            "enum": ["experience", "tutorial",
+                                     "reference", None],
+                            "description": (
+                                "Document-SHAP axis (orthogonal to "
+                                "topic, which is a task-domain axis — a "
+                                "doc may carry topic=deployment AND "
+                                "doc_kind=tutorial, AND-filtered in "
+                                "search()). 'experience' = retrospective "
+                                "pitfall/post-mortem; 'tutorial' = "
+                                "forward-looking followable procedure "
+                                "(SOP/runbook, 'unused until needed'); "
+                                "'reference' = pure reference fact. "
+                                "Optional — omit for an unlabeled doc "
+                                "(doc_kind=None, NOT implicitly "
+                                "'experience'; no back-fill of legacy "
+                                "docs). Valid values: "
+                                "kb_ingest_rules.DOC_KIND_VOCAB."
                             ),
                         },
                     },

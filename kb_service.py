@@ -226,6 +226,16 @@ def _normalize_docs(docs: list[dict]) -> list[dict]:
         # hash to the same payload. Supplied non-None values stay in
         # the payload (experience/archive are docid-meaningful).
         d.setdefault("gov_tier", None)
+        # doc_kind (orthogonal document-SHAP axis, PRD 2026-10-18 owner-
+        # agreed): NOT back-filled — a doc that omits doc_kind stays
+        # doc_kind=None ("unlabeled", NOT implicitly "experience"). The
+        # default MUST be None (never "experience"): the B1 None-filter
+        # keeps a None-valued key out of the docid payload, so
+        # doc_kind=None (absent) and doc_kind key-absent hash byte-
+        # identically for all legacy docs (the gov_tier precedent, one
+        # line up — a non-None default would re-mint every existing
+        # docid and sever the reinforce/ingest_ts/graph sidecar links).
+        d.setdefault("doc_kind", None)
         out.append(d)
     return out
 
@@ -1473,6 +1483,97 @@ class KbSearchService:
     # left by search(): verifying "is this known doc reachable" must NOT
     # require a BM25 word-surface gamble. Returns {found, doc_id, layer,
     # doc|staging_row} without scanning the whole corpus text index.
+
+    def refresh(self) -> dict:
+        """EX-lock rebase of BOTH the confirmed two-layer corpus and the
+        pending staging row store into this process's memory, WITHOUT
+        flushing either to disk (no persist, no seq bump, no graph
+        rebuild — a pure read-side re-sync, distinct from persist()
+        which rebase + flush).
+
+        Closes the 4be2560 read-path visibility gap: after the
+        in-place SH→EX seq-upgrade rebase was removed from search()
+        (the _probe_conflicts self-deadlock fix), a long-lived
+        READ-ONLY instance (a gateway whose KB face only ever calls
+        search()/get() and never ingest()/confirm()) stays stale —
+        it never sees another process's new docs until one of its OWN
+        write-path calls (ingest/confirm/persist) happens to trigger
+        _rebase(). refresh() gives such a read-only face an explicit,
+        on-demand re-sync door: call it (e.g. at the top of a
+        pre_llm_call auto-inject cycle, or before a deliberate
+        read-heavy batch) and the next search()/get() in the same
+        process sees every other gateway's writes.
+
+        Takes EX (not SH): _rebase() mutates this instance's hot/cold
+        + staging in-memory state, which is a write to the instance's
+        OWN memory even though it reads DISK state written by others —
+        the EX lock is what makes two concurrent refresh() calls on
+        the same data dir serialize cleanly (the same argument as
+        ingest()/confirm() taking EX around their own _rebase() call).
+        COST (callers must not assume refresh() is cheap/SH-gradable):
+        while refresh() holds EX, every other gateway's concurrent
+        ingest()/confirm() on the same data dir blocks on the flock
+        for the whole rebase duration. A read-only gateway calling
+        refresh() on a tight loop will therefore starve peer writers
+        the same way any EX-holding operation does — size refresh
+        cadence accordingly (a pre_llm_call cycle calling it once per
+        LLM turn is fine; calling it in a hot inner loop is not).
+        It does NOT bump self._seq or write any sidecar file, so a
+        read-only process calling refresh() in a tight loop still
+        never becomes a writer of the seq marker (the read-side
+        reinforce write-gate "only explicit tool calls count" rule is
+        untouched — refresh() is not a reinforce event, not an
+        ingest_ts event, not a graph rebuild trigger).
+
+        Out-of-band sweep marker side effect (reviewer nit, 2026-10-18
+        data-plane pass): refresh() runs the SAME staging-row
+        cross-process merge block ingest()/confirm() run, including
+        _consume_external_replace_marker() — if a tools/kb_stage_v2_sweep
+        --commit sweep left its marker file behind before this refresh()
+        ran, refresh() CONSUMES (unlinks) that marker AND applies the
+        wholesale-adopt exactly as ingest()/confirm() would (no sweep
+        signal is lost; the adopted set is now this instance's in-memory
+        staging truth, so a later ingest()/confirm() simply finds no
+        marker and unions over an already-correct set — no quarantined
+        docid resurrection). If callers care about "who" consumed the
+        marker (e.g. for audit), this is the one observable side effect
+        refresh() has beyond re-syncing memory: it can be the first
+        process to notice + apply a sweep commit, not the last one to
+        write.
+        """
+        fd = self._open_lock(exclusive=True)
+        try:
+            # confirmed two-layer corpus rebase (hot/cold), same call
+            # ingest()/confirm()/persist() all make first.
+            self._rebase()
+            # staging row store rebase: the exact same cross-process
+            # merge block ingest()/confirm() run (union-merge by
+            # docid, external-replace marker consumption, wholesale
+            # adopt on a sweep commit) — reused verbatim so a
+            # read-only process's staging view stays consistent with
+            # what a writer's rebase would produce, without ever
+            # becoming a writer itself.
+            staging_disk = self._read_staging_rows()
+            mem_staging = self._staging.docs_snapshot()
+            if self._consume_external_replace_marker():
+                self._staging.apply_external_replace(staging_disk)
+                mem_staging = staging_disk
+            merged_staging = _merge_docs(staging_disk, mem_staging)
+            if merged_staging != mem_staging:
+                self._staging.replace(merged_staging,
+                                      max(self._staging.generation, 0))
+            out = {
+                "status": "success",
+                "hot_gen": self._hot.generation,
+                "cold_gen": self._cold.generation,
+                "staging_gen": self._staging.generation,
+                "note": "rebase only — no flush/persist, no seq bump",
+            }
+            logger.debug("refresh rebase-only hot_gen=%d staging_gen=%d",
+                         self._hot.generation, self._staging.generation)
+            return out
+        finally:
+            self._close_lock(fd)
 
     def get(self, doc_id: str) -> dict:
         """Deterministically fetch one doc by its external doc_id.

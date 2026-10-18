@@ -72,7 +72,18 @@ class CrossProcessTests(unittest.TestCase):
             "waveB-1")
 
     # ② cross-process read visibility: a long-lived instance learns about
-    #    another process's write via the seq marker (in-place SH→EX upgrade)
+    #    another process's write via the seq marker.
+    #
+    #    Post-4be2560 (reviewer issue #1 deadlock fix) semantics: the
+    #    in-place SH→EX seq-upgrade rebase on the READ path was removed
+    #    because _probe_conflicts runs search() inside the caller's EX
+    #    section — re-acquiring the flock there self-deadlocks. Read-path
+    #    search() is now fully lock-free (no rebase); the rebase is owned
+    #    by the WRITE path only. A long-lived instance therefore sees a
+    #    peer process's new docs after ANY write-path operation (the
+    #    minimal one is persist(), which takes EX and calls _rebase()
+    #    before flushing) — NOT after a bare search() call. This test
+    #    pins that current behaviour.
     def test_stale_reader_rebases_before_answering(self):
         base = self._dir()
         from kb_service import KbSearchService
@@ -89,7 +100,11 @@ class CrossProcessTests(unittest.TestCase):
         p.start()
         p.join(30)
         self.assertEqual(p.exitcode, 0, "child process crashed")
-        # A's stale instance must now see the new doc (seq-marker rebase):
+        # A's stale instance re-syncs via a WRITE-path rebase (persist()
+        # takes EX and merges the on-disk corpora), not via a bare
+        # read-path search() (the 4be2560 deadlock fix made search()
+        # lock-free / non-rebasing by design).
+        reader.persist()
         self.assertEqual(
             reader.search("gamma 标记", top_k=1)["data"]["results"][0]["doc_id"],
             "waveC-1", "stale reader did not rebase on the seq marker")
