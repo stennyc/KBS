@@ -20,6 +20,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from handler_args import _normalize_handler_args
 
 # --- resolve the knowledge-base package (repo asset, not a site package) ----
 # The service lives in the project repo; make it importable from anywhere the
@@ -336,6 +337,9 @@ DISTILL_SCHEMA = {
 
 
 def _search_handler(args: dict, **kwargs) -> str:
+    args = _normalize_handler_args(args)
+    if args.get("status") == "error":
+        return json.dumps(args, ensure_ascii=False)
     svc = _svc()
     min_score = float(args.get("min_score", 0.0))
     filters = args.get("filters") or None
@@ -459,6 +463,9 @@ def _topic_search_handler(args: dict, **kwargs) -> str:
     ranking axis is TR-6's separate change)."""
     import json as _json
     from kb_ingest_hook import topic_search_service_args
+    args = _normalize_handler_args(args)
+    if args.get("status") == "error":
+        return _json.dumps(args, ensure_ascii=False)
     try:
         kwargs_s = topic_search_service_args(
             args.get("query", ""),
@@ -487,6 +494,9 @@ def _topic_search_handler(args: dict, **kwargs) -> str:
 
 
 def _ingest_handler(args: dict, **kwargs) -> str:
+    args = _normalize_handler_args(args)
+    if args.get("status") == "error":
+        return json.dumps(args, ensure_ascii=False)
     svc = _svc()
     docs = args.get("docs") or []
     if not docs:
@@ -518,6 +528,9 @@ def _ingest_handler(args: dict, **kwargs) -> str:
 
 
 def _confirm_handler(args: dict, **kwargs) -> str:
+    args = _normalize_handler_args(args)
+    if args.get("status") == "error":
+        return json.dumps(args, ensure_ascii=False)
     svc = _svc()
     doc_id = str(args.get("doc_id", "")).strip()
     if not doc_id:
@@ -537,6 +550,9 @@ def _distill_handler(args: dict, **kwargs) -> str:
     whether to persist via knowledge_base_ingest, swapping in
     distilled_title / distilled_content when the verdict passed the
     structure gate."""
+    args = _normalize_handler_args(args)
+    if args.get("status") == "error":
+        return json.dumps(args, ensure_ascii=False)
     from kb_ingest_hook import _WriteSideState, _STATES, _current_profile
     raw_title = str(args.get("raw_title") or "").strip()
     raw_content = str(args.get("raw_content") or "").strip()
@@ -600,6 +616,9 @@ def _share_to_global_handler(args: dict, **kwargs) -> str:
     new plumbing); the service method enforces both hard-gate
     conditions and writes every outcome to the existing _audit trail.
     """
+    args = _normalize_handler_args(args)
+    if args.get("status") == "error":
+        return json.dumps(args, ensure_ascii=False)
     from kb_ingest_hook import _current_profile
     svc = _svc()
     doc_id = str(args.get("doc_id", "")).strip()
@@ -662,6 +681,9 @@ def _set_doc_kind_handler(args: dict, **kwargs) -> str:
     fields — the service method enforces vocab validation + the
     in-place invariant and writes every outcome to the existing audit
     trail."""
+    args = _normalize_handler_args(args)
+    if args.get("status") == "error":
+        return json.dumps(args, ensure_ascii=False)
     svc = _svc()
     doc_id = str(args.get("doc_id", "")).strip()
     new_doc_kind = args.get("doc_kind")  # None means "clear the label"
@@ -702,6 +724,9 @@ GET_SCHEMA = {
 
 
 def _get_handler(args: dict, **kwargs) -> str:
+    args = _normalize_handler_args(args)
+    if args.get("status") == "error":
+        return json.dumps(args, ensure_ascii=False)
     svc = _svc()
     doc_id = str(args.get("doc_id", "")).strip()
     if not doc_id:

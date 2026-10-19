@@ -228,8 +228,14 @@ def regression_no_new_drift(data_dir: Path) -> int:
     for d in docs:
         stripped = {k: v for k, v in d.items() if k != "docid"}
         id_before = _deterministic_docid(stripped)
+        # 模拟 _normalize_docs 的 setdefault 语义（NOT 无条件覆盖）：
+        # 仅当 doc_kind key 物理缺失时补 None（None 被 B1 filter 排除，
+        # id 不变）；已有非 None doc_kind（如 'tutorial'/'experience'/
+        # 'reference'）的行 key 物理存在，setdefault 不触发 → id 同样
+        # 不变。旧版 bug：`sim_after['doc_kind'] = None` 会无条件覆盖
+        # 已有非 None doc_kind 值 → 带 doc_kind 的行必然 drift，误报。
         sim_after = dict(stripped)
-        sim_after["doc_kind"] = None  # 模拟 _normalize_docs 的 setdefault
+        sim_after.setdefault("doc_kind", None)
         id_after = _deterministic_docid(sim_after)
         if id_before != id_after:
             drifted.append(str(d.get("docid")))
