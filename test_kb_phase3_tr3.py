@@ -136,9 +136,10 @@ class TR3TopicVocabConfigTests(unittest.TestCase):
     validation."""
 
     def test_vocab_is_the_prd_first_phase_enum(self):
+        # owner 2026-10-19: frontend added (owner-reviewed extension).
         self.assertEqual(set(TOPIC_VOCAB),
                          {"messaging", "deployment",
-                          "data-pipeline", "general"})
+                          "data-pipeline", "frontend", "general"})
 
     def test_face_rejects_out_of_vocab_and_accepts_all_enum_values(self):
         for t in TOPIC_VOCAB:

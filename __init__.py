@@ -419,7 +419,8 @@ CONFIRM_TOPIC_SCHEMA = {
         "returns top-k agent-experience docs whose metadata topic "
         "equals the given value. topic must be one of the curated "
         "vocabulary (kb_ingest_rules.TOPIC_VOCAB, first phase: "
-        "messaging / deployment / data-pipeline / general); an "
+        "messaging / deployment / data-pipeline / frontend / "
+        "general); an "
         "out-of-vocabulary topic is rejected with an error payload "
         "listing the valid values (NOT a silent zero-hit search). "
         "Omit topic (or pass null) to search the whole agent "
@@ -444,7 +445,7 @@ CONFIRM_TOPIC_SCHEMA = {
             "topic": {
                 "type": ["string", "null"],
                 "enum": ["messaging", "deployment", "data-pipeline",
-                         "general", None],
+                         "frontend", "general", None],
                 "description": (
                     "Task-topic coarse filter (exact metadata match). "
                     "Must be a TOPIC_VOCAB value or null (null/"

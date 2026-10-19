@@ -46,6 +46,9 @@ TOPIC_VOCAB: tuple = (
     "messaging",
     "deployment",
     "data-pipeline",
+    # owner 2026-10-19: frontend added (前端工程经验: 组件/hooks、构建工具链、
+    # UI 调试、样式系统、前端部署/CDN、浏览器兼容坑)。正交轴见 doc_kind。
+    "frontend",
     "general",
 )
 
