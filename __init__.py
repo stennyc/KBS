@@ -107,6 +107,53 @@ def _svc():
     return _service
 
 
+# ---------------------------------------------------------------------------
+# Nested-field type coercion (reviewer M-1, 2026-10-19).
+#
+# _normalize_handler_args (handler_args.py) only validates that the OUTER
+# payload is a dict. A model can still send a JSON-valid dict whose NESTED
+# value is the wrong type — e.g. {"top_k": "abc"} or {"min_score": null} —
+# and the handler's bare int()/float() coercion then raises an uncaught
+# ValueError/TypeError (the same crash class handler_args.py was created
+# to fix, one level down the field hierarchy). These two helpers wrap each
+# nested coercion and fail CLOSED with a structured invalid_args payload
+# instead of a traceback; a correctly-typed value passes through
+# unchanged (byte-identical for every existing well-formed caller).
+# ---------------------------------------------------------------------------
+
+def _coerce_int_arg(args: dict, key: str, default: int) -> tuple:
+    """Coerce args[key] to int with a default.
+
+    Returns (value, None) on success, or (None, error_payload_dict) when
+    the value is not a valid integer (string like 'abc', null, etc.).
+    Missing key -> default (no error).
+    """
+    if key not in args:
+        return default, None
+    raw = args[key]
+    try:
+        return int(raw), None
+    except (ValueError, TypeError):
+        return None, {"status": "error", "error": "invalid_args",
+                      "message": f"{key} must be an integer (got {raw!r})"}
+
+
+def _coerce_float_arg(args: dict, key: str, default: float) -> tuple:
+    """Coerce args[key] to float with a default.
+
+    Returns (value, None) on success, or (None, error_payload_dict) when
+    the value is not a valid number.
+    """
+    if key not in args:
+        return default, None
+    raw = args[key]
+    try:
+        return float(raw), None
+    except (ValueError, TypeError):
+        return None, {"status": "error", "error": "invalid_args",
+                      "message": f"{key} must be a number (got {raw!r})"}
+
+
 SEARCH_SCHEMA = {
     "name": "knowledge_base_search",
     "description": (
@@ -188,8 +235,11 @@ INGEST_SCHEMA = {
         "physically-isolated staging store and are NOT searchable until "
         "confirmed; confirmed docs enter the two-layer corpus and are "
         "searchable immediately. Confirmed docs pass a length gate "
-        "(title 5-200, content 20-10000 chars) and a BM25 near-duplicate "
-        "self-check (no model, no external API)."
+        "(title 5-200 chars, content 60-10000 UTF-8 bytes — 60 bytes ≈ "
+        "20 CJK chars; a short CJK string below ~20 chars is rejected as "
+        "trivial; the gate measures UTF-8 BYTES, not characters, "
+        "kb_service._CONTENT_MIN, 2026-10-19 owner decision) and a BM25 "
+        "near-duplicate self-check (no model, no external API)."
     ),
     "parameters": {
         "type": "object",
@@ -354,8 +404,20 @@ def _search_handler(args: dict, **kwargs) -> str:
     args = _normalize_handler_args(args)
     if args.get("status") == "error":
         return json.dumps(args, ensure_ascii=False)
+    # Required-field guard (m-3): schema declares query required — an
+    # empty/missing query returns a structured error, not a zero-hit search.
+    if not str(args.get("query") or "").strip():
+        return json.dumps({"status": "error",
+                           "error": "query is required"},
+                          ensure_ascii=False)
     svc = _svc()
-    min_score = float(args.get("min_score", 0.0))
+    # Nested-field coercion (M-1): fail closed on a malformed min_score.
+    min_score, min_err = _coerce_float_arg(args, "min_score", 0.0)
+    if min_err is not None:
+        return json.dumps(min_err, ensure_ascii=False)
+    top_k, top_err = _coerce_int_arg(args, "top_k", 5)
+    if top_err is not None:
+        return json.dumps(top_err, ensure_ascii=False)
     filters = args.get("filters") or None
     # TR-8: read-side default profile-scoping. If the caller did NOT pass an
     # explicit source_profile filter, inject the current caller's
@@ -387,7 +449,7 @@ def _search_handler(args: dict, **kwargs) -> str:
     topic_scores = args.get("topic_scores") or None
     payload = svc.search(
         query=args.get("query", ""),
-        top_k=int(args.get("top_k", 5)),
+        top_k=top_k,
         filters=filters,
         min_score=min_score,
         # RRF two-axis rerank ON by default (owner batch ②): the explicit
@@ -404,7 +466,7 @@ def _search_handler(args: dict, **kwargs) -> str:
     # turn; anchor-matching against the next turn happens in a separate
     # reinforce(followup_text=...) call the caller makes later.)
     data = payload.get("data", {}).get("results", [])
-    for hit in data[: int(args.get("top_k", 5))]:
+    for hit in data[: top_k]:
         docid = str(hit.get("doc_id", ""))
         if docid:
             svc.reinforce(docid, reason="explicit_search")
@@ -481,11 +543,21 @@ def _topic_search_handler(args: dict, **kwargs) -> str:
     args = _normalize_handler_args(args)
     if args.get("status") == "error":
         return _json.dumps(args, ensure_ascii=False)
+    # Required-field guard (m-4): schema declares query required — an
+    # empty/missing query returns a structured error, not a zero-hit search.
+    if not str(args.get("query") or "").strip():
+        return _json.dumps({"status": "error",
+                            "error": "query is required"},
+                           ensure_ascii=False)
+    # Nested-field coercion (M-1): fail closed on a malformed top_k.
+    top_k, top_err = _coerce_int_arg(args, "top_k", 5)
+    if top_err is not None:
+        return _json.dumps(top_err, ensure_ascii=False)
     try:
         kwargs_s = topic_search_service_args(
             args.get("query", ""),
             args.get("topic"),
-            int(args.get("top_k", 5)),
+            top_k,
         )
     except ValueError as exc:
         # The chosen clarity semantics: out-of-vocab topic rejects
@@ -501,7 +573,7 @@ def _topic_search_handler(args: dict, **kwargs) -> str:
     # hit(s) so the recency axis can rank them later — the pre_llm_call
     # path remains the zero-reinforce one (R-3).
     data = payload.get("data", {}).get("results", [])
-    for hit in data[: int(kwargs_s["top_k"])]:
+    for hit in data[: top_k]:
         docid = str(hit.get("doc_id", ""))
         if docid:
             svc.reinforce(docid, reason="explicit_search")
@@ -571,9 +643,16 @@ def _distill_handler(args: dict, **kwargs) -> str:
     from kb_ingest_hook import _WriteSideState, _STATES, _current_profile
     raw_title = str(args.get("raw_title") or "").strip()
     raw_content = str(args.get("raw_content") or "").strip()
-    if not raw_title and not raw_content:
+    # Required-field guard (m-2): schema declares BOTH raw_title and
+    # raw_content required — enforce both (parity with _search/_topic
+    # query guards), not the weaker one-of-two.
+    if not raw_title:
         return json.dumps({"status": "error",
-                           "error": "raw_title or raw_content required"},
+                           "error": "raw_title is required"},
+                          ensure_ascii=False)
+    if not raw_content:
+        return json.dumps({"status": "error",
+                           "error": "raw_content is required"},
                           ensure_ascii=False)
     # Reuse the process-local host main_runtime snapshot (the same cache
     # the post_llm_call hook face fills — a standalone tool call from a
@@ -637,6 +716,13 @@ def _share_to_global_handler(args: dict, **kwargs) -> str:
     from kb_ingest_hook import _current_profile
     svc = _svc()
     doc_id = str(args.get("doc_id", "")).strip()
+    # Required-field guard (m-1): schema declares doc_id required — an
+    # empty/missing doc_id returns a structured error (parity with
+    # _confirm_handler / _get_handler), not a not_found service error.
+    if not doc_id:
+        return json.dumps({"status": "error",
+                           "error": "doc_id is required"},
+                          ensure_ascii=False)
     caller_profile = _current_profile()
     out = svc.share_to_global(doc_id, source_profile=caller_profile)
     svc.persist()  # make the global copy durable across process restarts
