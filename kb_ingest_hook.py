@@ -107,7 +107,29 @@ _PROFILE_ENV = "HERMES_PROFILE"
 
 
 def _current_profile() -> Optional[str]:
+    """The owning profile of the CURRENT task (multiplex-aware).
+
+    Ladder: host context-local hermes home (per-profile spawner binds the
+    owning profile's home into a ContextVar — the env var alone is frozen
+    at the launch profile under a multiplexed gateway) -> derive
+    ``.../profiles/<name>`` -> ``<name>``; else the process env
+    HERMES_PROFILE; else None (= global/CLI docs, confirm() treats as
+    no cross-profile restriction). A missing host module (standalone)
+    degrades to the env-only path — never a crash, never raises.
+    """
     import os
+    try:
+        from hermes_constants import get_hermes_home
+        home = str(get_hermes_home() or "")
+    except Exception:  # pragma: no cover - standalone / older-host fallback
+        home = os.environ.get("HERMES_HOME", "")
+    if home:
+        from pathlib import Path
+        parts = [p for p in Path(home).parts if p]
+        if "profiles" in parts:
+            idx = parts.index("profiles")
+            if idx + 1 < len(parts):
+                return parts[idx + 1]
     val = os.environ.get(_PROFILE_ENV, "").strip()
     return val or None
 

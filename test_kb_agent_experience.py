@@ -395,6 +395,13 @@ class TR8Tests(unittest.TestCase):
         # the module-level service object so _svc() returns our instance.
         mod._service = svc
         old_profile = os.environ.get("HERMES_PROFILE")
+        old_home = os.environ.get("HERMES_HOME")
+        # Multiplex fix: these cases pin their caller via HERMES_PROFILE,
+        # but _current_profile() now also derives the caller from the
+        # profile-scoped HERMES_HOME home — blank it so the synthetic
+        # Y/X caller identities are the sole signal (a live profile-scoped
+        # test host would otherwise leak its own profile into the search).
+        os.environ.pop("HERMES_HOME", None)
         try:
             # --- Case 1: profile Y (no explicit filters) must NOT see X doc ---
             os.environ["HERMES_PROFILE"] = "Y"
@@ -424,6 +431,10 @@ class TR8Tests(unittest.TestCase):
                 os.environ["HERMES_PROFILE"] = old_profile
             else:
                 os.environ.pop("HERMES_PROFILE", None)
+            if old_home is not None:
+                os.environ["HERMES_HOME"] = old_home
+            else:
+                os.environ.pop("HERMES_HOME", None)
         return ids_y, ids_y_none, ids_y_x, ids_x
 
     def test_tr8_cross_profile_leak_negative(self):
@@ -534,7 +545,13 @@ class TR8Tests(unittest.TestCase):
         mod._service = svc
 
         old_profile = os.environ.get("HERMES_PROFILE")
+        old_home = os.environ.get("HERMES_HOME")
         os.environ.pop("HERMES_PROFILE", None)
+        # Multiplex fix: _current_profile() now derives the caller from the
+        # context-local / HERMES_HOME home FIRST; this test pins the CLI
+        # no-signal leg, so blank HERMES_HOME too (else the live test host's
+        # profile-scoped home would leak a caller profile into the search).
+        os.environ.pop("HERMES_HOME", None)
         try:
             # No profile -> no implicit filter -> both docs visible.
             out = mod._search_handler({"query": "知识 条目 共享"})
@@ -547,6 +564,12 @@ class TR8Tests(unittest.TestCase):
         finally:
             if old_profile is not None:
                 os.environ["HERMES_PROFILE"] = old_profile
+            else:
+                os.environ.pop("HERMES_PROFILE", None)
+            if old_home is not None:
+                os.environ["HERMES_HOME"] = old_home
+            else:
+                os.environ.pop("HERMES_HOME", None)
             mod._service = orig_service
 
 

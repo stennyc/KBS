@@ -45,6 +45,7 @@ Run: PYTHONPATH=/root/.hermes/plugins/knowledge-base-search \
      /root/.hermes/plugin-venv/bin/python -m pytest test_kb_phase4_tr10.py -q
 """
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -558,19 +559,65 @@ class TR10PluginFaceTests(unittest.TestCase):
         then applies the confirm()-style rule (None admitted only
         against a stored-None row; here every row is profile-owned so
         the result is not_found/profile_mismatch-class rejection, NOT
-        a silent global write)."""
+        a silent global write).
+
+        Multiplex fix (2026-10-19): _current_profile() now resolves the
+        host context-local home FIRST (a multiplexed gateway's
+        per-profile task would otherwise be stamped with the launch
+        profile's frozen env, or with None on a per-profile worker that
+        has no HERMES_PROFILE). This test pins the NO-SIGNAL leg: it
+        blanks HERMES_HOME (not just HERMES_PROFILE) and stubs the host
+        helper out, so the function exercises exactly the legacy
+        env-only path the pre-fix code had. The profile-scoped leg is
+        covered by test_handler_no_profile_env_derives_from_home below."""
         fake = mock.Mock()
         fake.share_to_global.return_value = {
             "status": "error", "error": "not_found", "doc_id": "ag-x"}
-        old = _set_env_profile(None)
+        old_profile = _set_env_profile(None)
+        old_home = os.environ.get("HERMES_HOME")
+        os.environ.pop("HERMES_HOME", None)
+        try:
+            with mock.patch.dict(os.environ, {}, clear=False), \
+                 mock.patch.dict(sys.modules, {"hermes_constants": None}):
+                with mock.patch.object(self._pkg, "_svc", lambda: fake):
+                    out = self._pkg._share_to_global_handler({"doc_id": "ag-x"})
+            fake.share_to_global.assert_called_once_with(
+                "ag-x", source_profile=None)
+        finally:
+            if old_home is not None:
+                os.environ["HERMES_HOME"] = old_home
+            else:
+                os.environ.pop("HERMES_HOME", None)
+            _restore_env_profile(old_profile)
+        self.assertEqual(json.loads(out)["status"], "error")
+
+    def test_handler_no_profile_env_derives_from_home(self):
+        """Multiplex fix (2026-10-19): with no HERMES_PROFILE env but a
+        host-resolvable profile-scoped home (.../profiles/<name>), the
+        caller identity is DERIVED from the home — a per-profile worker
+        under a multiplexed gateway that never pins HERMES_PROFILE must
+        still stamp its own profile, not fall through to the global
+        None. This is the new behavior the legacy no-profile test above
+        cannot cover (its home is the test's real profile-scoped env)."""
+        fake = mock.Mock()
+        fake.share_to_global.return_value = {
+            "status": "success", "doc_id": "ag-x",
+            "global_doc_id": "g-1", "source_profile": "amoi"}
+        old_profile = _set_env_profile(None)
+        old_home = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = "/root/.hermes/profiles/amoi"
         try:
             with mock.patch.object(self._pkg, "_svc", lambda: fake):
                 out = self._pkg._share_to_global_handler({"doc_id": "ag-x"})
             fake.share_to_global.assert_called_once_with(
-                "ag-x", source_profile=None)
+                "ag-x", source_profile="amoi")
         finally:
-            _restore_env_profile(old)
-        self.assertEqual(json.loads(out)["status"], "error")
+            if old_home is not None:
+                os.environ["HERMES_HOME"] = old_home
+            else:
+                os.environ.pop("HERMES_HOME", None)
+            _restore_env_profile(old_profile)
+        self.assertEqual(json.loads(out)["status"], "success")
 
     def test_handler_persists_even_on_rejection(self):
         """persist() runs regardless of outcome so a later successful

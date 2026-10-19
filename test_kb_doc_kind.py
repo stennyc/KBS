@@ -166,40 +166,58 @@ class DocKindTopicSearchRegressionTests(unittest.TestCase):
     """
 
     def test_agent_partition_search_unaffected_by_doc_kind(self):
+        import os
+        from unittest import mock
         from kb_ingest_hook import topic_search_service_args
+        # Multiplex fix: topic_search_service_args stamps the caller's
+        # profile into the filters (_current_profile); this corpus is
+        # intentionally GLOBAL (no source_profile) and pins the doc_kind
+        # axis only, so run it as a no-profile caller — the same no-signal
+        # posture as the CLI leg (host helper stubbed, HERMES_HOME blanked).
+        old_home = os.environ.get("HERMES_HOME")
+        old_profile = os.environ.get("HERMES_PROFILE")
+        os.environ.pop("HERMES_HOME", None)
+        os.environ.pop("HERMES_PROFILE", None)
         svc, data = _svc()
-        out = svc.ingest([{
-            "docid": "dk-agent-1",
-            "title": "agent 经验 部署 踩坑 记录",
-            "content": "这是一条 agent 经验 部署 时踩的坑 若干字 内容 DKA1FILL甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲",
-            "status": "confirmed",
-            "origin_kind": "agent",
-            "topic": "deployment",
-            "doc_kind": "tutorial",
-        }, {
-            "docid": "dk-agent-2x",
-            "title": "agent 经验 部署 另一条",
-            "content": "第二条 agent 经验 部署 相关 内容 若干字 不同 DKA2FILL甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲",
-            "status": "confirmed",
-            "origin_kind": "agent",
-            "topic": "deployment",
-        }])
-        self.assertEqual(sorted(out["ingested"]), ["dk-agent-1", "dk-agent-2x"])
-        kwargs = topic_search_service_args("部署", "deployment", 5)
-        self.assertEqual(kwargs["filters"].get("origin_kind"), "agent")
-        self.assertEqual(kwargs["filters"].get("topic"), "deployment")
-        res = svc.search(**kwargs)
-        ids = {r["doc_id"] for r in res["data"]["results"]}
-        self.assertEqual(ids, {"dk-agent-1", "dk-agent-2x"},
-                         "the agent-partition topic search must be "
-                         "independent of doc_kind (both docs hit regardless "
-                         "of whether doc_kind is set)")
-        # 显式钉回归语义：不带任何 filter 的同一查询也必须命中同样的两条
-        # （agent 分区检索结果不随 doc_kind 轴出现/消失而变化）
-        res_bare = svc.search("部署", top_k=5)
-        self.assertEqual(
-            {r["doc_id"] for r in res_bare["data"]["results"]},
-            {"dk-agent-1", "dk-agent-2x"})
+        try:
+            with mock.patch.dict(sys.modules, {"hermes_constants": None}):
+                out = svc.ingest([{
+                    "docid": "dk-agent-1",
+                    "title": "agent 经验 部署 踩坑 记录",
+                    "content": "这是一条 agent 经验 部署 时踩的坑 若干字 内容 DKA1FILL甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲",
+                    "status": "confirmed",
+                    "origin_kind": "agent",
+                    "topic": "deployment",
+                    "doc_kind": "tutorial",
+                }, {
+                    "docid": "dk-agent-2x",
+                    "title": "agent 经验 部署 另一条",
+                    "content": "第二条 agent 经验 部署 相关 内容 若干字 不同 DKA2FILL甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲",
+                    "status": "confirmed",
+                    "origin_kind": "agent",
+                    "topic": "deployment",
+                }])
+            self.assertEqual(sorted(out["ingested"]), ["dk-agent-1", "dk-agent-2x"])
+            kwargs = topic_search_service_args("部署", "deployment", 5)
+            self.assertEqual(kwargs["filters"].get("origin_kind"), "agent")
+            self.assertEqual(kwargs["filters"].get("topic"), "deployment")
+            res = svc.search(**kwargs)
+            ids = {r["doc_id"] for r in res["data"]["results"]}
+            self.assertEqual(ids, {"dk-agent-1", "dk-agent-2x"},
+                             "the agent-partition topic search must be "
+                             "independent of doc_kind (both docs hit regardless "
+                             "of whether doc_kind is set)")
+            # 显式钉回归语义：不带任何 filter 的同一查询也必须命中同样的两条
+            # （agent 分区检索结果不随 doc_kind 轴出现/消失而变化）
+            res_bare = svc.search("部署", top_k=5)
+            self.assertEqual(
+                {r["doc_id"] for r in res_bare["data"]["results"]},
+                {"dk-agent-1", "dk-agent-2x"})
+        finally:
+            if old_home is not None:
+                os.environ["HERMES_HOME"] = old_home
+            if old_profile is not None:
+                os.environ["HERMES_PROFILE"] = old_profile
 
 
 # ---------------------------------------------------------------------------
