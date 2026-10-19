@@ -48,7 +48,7 @@ class CrossProcessTests(unittest.TestCase):
         from kb_service import KbSearchService
         a = KbSearchService(base)
         a.ingest([{"docid": "waveA-1", "title": "Alpha 管道",
-                   "content": "alpha 管道 架构 批处理 流处理 抽取",
+                   "content": "alpha 管道 架构 批处理 流处理 抽取 填充 段落 若干字 扩充 内容 标记 词 一",
                    "status": "confirmed"}])
 
         # Real second process (B): unrelated batch, same dir.
@@ -56,7 +56,7 @@ class CrossProcessTests(unittest.TestCase):
         p = ctx.Process(target=_child_ingest,
                         args=(str(base),
                               [{"docid": "waveB-1", "title": "Beta 容器",
-                                "content": "beta 容器 引擎 轻量 可移植 打包",
+                                "content": "beta 容器 引擎 轻量 可移植 打包 填充 段落 若干字 扩充 内容 标记 词 二",
                                 "status": "confirmed"}]))
         p.start()
         p.join(30)
@@ -95,7 +95,7 @@ class CrossProcessTests(unittest.TestCase):
         p = ctx.Process(target=_child_ingest,
                         args=(str(base),
                               [{"docid": "waveC-1", "title": "Gamma 标记",
-                                "content": "gamma 标记 跨进程 可见性 测试 用例 填充",
+                                "content": "gamma 标记 跨进程 可见性 测试 用例 填充 段落 若干字 扩充 内容 标记 词 三 独立甲 独立乙 独立丙 独立丁 独立戊 独立己 独立庚 独立辛 独立壬 独立癸",
                                 "status": "confirmed"}]))
         p.start()
         p.join(30)
@@ -115,16 +115,20 @@ class CrossProcessTests(unittest.TestCase):
         from kb_service import KbSearchService
         reader = KbSearchService(base)
         reader.ingest([{"docid": "seed-1", "title": "Seed 词",
-                        "content": "seed 词汇 种子 词表 初始化 填充",
+                        "content": "seed 词汇 种子 词表 初始化 填充 段落 若干字 扩充 内容 标记 词 四",
                         "status": "confirmed"}])
         ctx = multiprocessing.get_context("fork")
         procs = [
             ctx.Process(target=_child_ingest,
                         args=(str(base),
                              [{"docid": f"conc-{i}", "title": f"并发 文档 {i}",
-                               "content": f"concurrent 并发 文档 批次 编号 {i}",
+                               "content": f"并发 文档 批次 编号 {i} 场景 填充 段落 若干字 扩充 长度 门 之上 合格 内容 标记 {extra}",
                                "status": "confirmed"}]))
-            for i in range(3)
+            for i, extra in [
+                (0, "苹果 香蕉 橙子 葡萄 核桃 栗子 松子 榛子"),
+                (1, "玫瑰 百合 菊花 兰花 梅花 桃花 杏花 梨花"),
+                (2, "狮子 老虎 大象 长颈鹿 斑马 河马 犀牛 水牛"),
+            ]
         ]
         # Reader churns while writers run:
         for _ in range(20):

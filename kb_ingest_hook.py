@@ -1013,6 +1013,14 @@ class _WriteSideState:
         # omits the key entirely.
         if kb_tier == "archive" and cand.project_ref:
             doc["project_ref"] = cand.project_ref
+        # owner 2026-10-19: agent auto-captured docs NEVER carry a
+        # doc_kind label at capture time (the key is deliberately absent
+        # here — _normalize_docs then setdefaults doc_kind=None, so
+        # B1-None-filter stable). Labeling a doc_kind is the owner's
+        # EXPLICIT action (knowledge_base_set_doc_kind / a user ingest
+        # with doc_kind set = user-specified, no review gate); the agent
+        # capture path must not pre-assign it (owner review scope,
+        # TR-9 follow-up).
         if not (5 <= len(doc["title"]) <= 200):
             doc["title"] = (doc["title"][:5] + "…") if doc["title"] \
                 else "agent 经验条目"

@@ -436,12 +436,17 @@ def test_distill_clean_tier_model_unknown():
     """Tier 3 (model doesn't know): distilled_content set, use_original=False."""
     import kb_distill
     from kb_distill import distill_content
-    fake = _FakeHostCall('{"tier": "model-unknown", "distilled_title": "内部框架 import 路径", "distilled_content": "from myorg.core import Foo; call Foo() with kwarg x=1", "anchor_points": ["myorg.core.Foo", "kwarg x=1"]}')
+    # distilled_content must be >= _DISTILL_CONTENT_MIN UTF-8 bytes
+    # (mirrors kb_service._CONTENT_MIN = 60; 2026-10-19 triviality floor).
+    # "from myorg.core import Foo; call Foo() with kwarg x=1" = 52 bytes,
+    # so pad to 60+ with a meaningful suffix.
+    dist_content = "from myorg.core import Foo; call Foo() with kwarg x=1 and kwarg y=2 for the full call path"
+    fake = _FakeHostCall('{"tier": "model-unknown", "distilled_title": "内部框架 import 路径", "distilled_content": "' + dist_content + '", "anchor_points": ["myorg.core.Foo", "kwarg x=1"]}')
     monkey = _Monkey()
     monkey.set(kb_distill, "_HOST_CALL_LLM", fake)
     v = distill_content({"model": "m"}, "内部框架", "一段内部框架文档...")
     assert v["use_original"] is False
-    assert v["distilled_content"] == "from myorg.core import Foo; call Foo() with kwarg x=1"
+    assert v["distilled_content"] == dist_content
     assert v["anchor_points"] == ["myorg.core.Foo", "kwarg x=1"]
     assert v["drop_reason"] is None
     assert v["model_used"] is True

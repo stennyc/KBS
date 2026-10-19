@@ -53,7 +53,7 @@ def _svc_with_audit():
 
 def _confirmed_doc(docid, title="Redis 缓存穿透 治理 经验条目", content=None, **extra):
     d = {"docid": docid, "title": title,
-         "content": content or ("Redis 缓存穿透 治理 方案 乙丙丁戊" * 3),
+         "content": content or ("Redis 缓存穿透 治理 方案 乙丙丁戊 填充 段落 若干字 扩充 内容 标记 词" * 3),
          "status": "confirmed"}
     d.update(extra)
     return d
@@ -73,7 +73,7 @@ class SupersededByFieldTests(unittest.TestCase):
 
     def test_supersede_stamps_in_place_no_new_docid(self):
         svc, *_ = _svc_with_audit()
-        svc.ingest([_confirmed_doc("old-1"), _confirmed_doc("new-1")])
+        svc.ingest([_confirmed_doc("old-1"), _confirmed_doc("new-1", content="Redis 缓存穿透 治理 方案 乙丙丁戊 替换 为 新版 方案 填充 段落 若干字 扩充 内容 标记 词")])
         out = svc.supersede("old-1", superseded_by="new-1",
                             confirmed_by="owner")
         self.assertEqual(out.get("status"), "success", out)
@@ -103,7 +103,7 @@ class SupersededByFieldTests(unittest.TestCase):
 
     def test_reinstate_clears_the_marker_doc_stays(self):
         svc, *_ = _svc_with_audit()
-        svc.ingest([_confirmed_doc("old-1"), _confirmed_doc("new-1")])
+        svc.ingest([_confirmed_doc("old-1"), _confirmed_doc("new-1", content="Redis 缓存穿透 治理 方案 乙丙丁戊 替换 为 新版 方案 填充 段落 若干字 扩充 内容 标记 词")])
         svc.supersede("old-1", superseded_by="new-1", confirmed_by="owner")
         out = svc.reinstate("old-1", confirmed_by="owner")
         self.assertEqual(out.get("status"), "success", out)
@@ -117,7 +117,7 @@ class SupersededByFieldTests(unittest.TestCase):
 
     def test_supersede_reinstate_are_idempotent_and_noop_safe(self):
         svc, *_ = _svc_with_audit()
-        svc.ingest([_confirmed_doc("old-1"), _confirmed_doc("new-1")])
+        svc.ingest([_confirmed_doc("old-1"), _confirmed_doc("new-1", content="Redis 缓存穿透 治理 方案 乙丙丁戊 替换 为 新版 方案 填充 段落 若干字 扩充 内容 标记 词")])
         svc.supersede("old-1", superseded_by="new-1", confirmed_by="owner")
         out = svc.reinstate("old-1", confirmed_by="owner")
         self.assertEqual(out.get("status"), "success")
@@ -151,9 +151,9 @@ class SupersededBySearchDropTests(unittest.TestCase):
     def _seeded(self):
         svc, base, data, audit = _svc_with_audit()
         svc.ingest([_confirmed_doc("old", title="Redis 缓存穿透 治理",
-                                   content="Redis 缓存穿透 治理 方案 乙丙丁戊"),
+                                   content="Redis 缓存穿透 治理 方案 乙丙丁戊 填充 段落 若干字 扩充 内容 标记 词"),
                     _confirmed_doc("new", title="Redis 缓存穿透 治理 v2",
-                                   content="Redis 缓存穿透 治理 方案 v2 甲乙丙丁")])
+                                   content="Redis 缓存穿透 治理 方案 v2 甲乙丙丁 填充 段落 若干字 扩充 内容 标记 词 乙")])
         svc.supersede("old", superseded_by="new", confirmed_by="owner")
         return svc, base, data, audit
 

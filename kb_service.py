@@ -76,8 +76,26 @@ _STAGING_EXTERNAL_REPLACE = "staging_external_replace"
 _AUDIT_NAME = "knowledge-base-ingest.jsonl"
 # Governance gates (P0 room ruling):
 #   length gate — title/content bounds (reject out-of-range, log the reason).
+#   Triviality floor (owner 2026-10-19: 知识库面向知识/经验/手册/教程/
+#   教材/资料，不收录琐碎资料): content below _CONTENT_MIN bytes (UTF-8)
+#   is "trivial" for a KNOWLEDGE corpus — a 20-char floor let test
+#   placeholders and truncated fragments walk into the confirmed corpus
+#   (141 "q…" rows measured 2026-10-19). 60 bytes ≈ 20 CJK chars: blocks
+#   trivial noise without rejecting normal experience rows (measured 2026-
+#   10-19: agent-partition rows mostly > 100 bytes; 226 rows < 60 bytes
+#   are the pollution this floor clears).
+#   Measured in UTF-8 BYTES (not chars): a CJK char is 3 bytes, so 60B ≈
+#   20 CJK chars — a meaningful "trivial" line needs at least ~20 汉字.
+#   ASCII content would need 60+ chars. This is the correct unit for a
+#   mixed-language corpus (counting chars would let a 20-char CJK line
+#   through at 60B while a 59-char ASCII line would fail — byte-counting
+#   keeps the bar consistent across scripts).
+#   The floor is content length ONLY (title keeps its own 5-200 bounds);
+#   it applies on BOTH confirmed entry paths: ingest(status=confirmed) AND
+#   confirm() (staging->corpus move), so the agent self-confirm path
+#   cannot smuggle a short row past the floor by staging first.
 _TITLE_MIN, _TITLE_MAX = 5, 200
-_CONTENT_MIN, _CONTENT_MAX = 20, 10000
+_CONTENT_MIN, _CONTENT_MAX = 60, 10000
 #   near-duplicate self-check (BM25 over the confirmed corpus, no model/API):
 #     top-1 normalized score >= _DEDUP_BLOCK  -> reject/merge (near-exact dup)
 #     _DEDUP_AUDIT <= score < _DEDUP_BLOCK     -> log "suspected dup", don't block
@@ -594,9 +612,14 @@ class KbSearchService:
                     "got": len(title),
                     "bounds": [_TITLE_MIN, _TITLE_MAX],
                     "source_profile": doc.get("source_profile")}
-        if not (_CONTENT_MIN <= len(content) <= _CONTENT_MAX):
+        # Triviality floor is measured in UTF-8 BYTES (not chars) so the
+        # bar is consistent across CJK (3B/char) and ASCII (1B/char):
+        # 60B ≈ 20 CJK chars ≈ 60 ASCII chars.
+        content_bytes = len(content.encode("utf-8"))
+        if not (_CONTENT_MIN <= content_bytes <= _CONTENT_MAX):
             return {"reason": "length_gate", "field": "content",
-                    "got": len(content),
+                    "got": content_bytes,
+                    "unit": "bytes_utf8",
                     "bounds": [_CONTENT_MIN, _CONTENT_MAX],
                     "source_profile": doc.get("source_profile")}
         if skip_near_dup:
@@ -703,6 +726,27 @@ class KbSearchService:
                             stored_profile=stored_profile)
                 return {"status": "error", "error": "profile_mismatch",
                         "doc_id": doc_id}
+            # Triviality floor (owner 2026-10-19): the staging->corpus move
+            # re-runs the length gate (the agent self-confirm path stages
+            # FIRST, then confirms — without this check a short row could
+            # stage clean and sneak into the confirmed corpus). Rejection
+            # is AUDITED (confirm_length_gate) and the row is LEFT IN
+            # STAGING (a confirm that fails the gate must not delete the
+            # pending row — the owner can still fix + re-confirm, and the
+            # stale-staging TTL sweep is the terminal backstop).
+            gate = self._governance_gate(row, skip_near_dup=True)
+            if gate is not None:
+                self._audit(action="confirm", doc_id=doc_id,
+                            source_profile=source_profile,
+                            confirmed_by=confirmed_by,
+                            error="length_gate",
+                            field=gate.get("field"),
+                            got=gate.get("got"),
+                            bounds=gate.get("bounds"))
+                return {"status": "error", "error": "length_gate",
+                        "doc_id": doc_id, "field": gate.get("field"),
+                        "got": gate.get("got"),
+                        "bounds": gate.get("bounds")}
             # Atomic move-out + move-in under the same EX lock.
             moved = self._staging.remove(doc_id)  # returns the removed row
             if moved is None:

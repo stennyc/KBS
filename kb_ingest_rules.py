@@ -53,21 +53,32 @@ TOPIC_VOCAB: tuple = (
 # doc_kind vocabulary (orthogonal document-SHAP axis, NOT a task-domain
 # axis like TOPIC_VOCAB — the same doc may carry topic="deployment" AND
 # doc_kind="tutorial"; the two axes are independent filters combined by
-# AND in search()). Three values:
+# AND in search()). Five values (owner 2026-10-19 expansion: 知识库面向
+# 知识/经验/手册/教程/教材/资料):
 #   experience — retrospective pitfall / post-mortem (the default semantic
 #                home of origin_kind=agent docs, but NOT back-filled;
 #                docs that omit doc_kind stay doc_kind=None = unlabeled)
 #   tutorial   — forward-looking, followable procedure (SOP / runbook /
 #                troubleshooting guide): "unused until needed, look it up
 #                then search" long-tail reference material
+#   manual     — a system's reference manual / runbook (how-to for an
+#                existing system, not a step-by-step lesson)
 #   reference  — pure reference fact (no judgement, no steps)
+#   material   — teaching material / book excerpt (long-form study
+#                content, the "书籍/教材" class)
+# Governance (owner 2026-10-19): a user-specified doc_kind (ingest with
+# doc_kind set, or set_doc_kind) lands as-is — no review gate. The owner-
+# review constraint applies to AGENT auto-captured docs: they default to
+# doc_kind=None and are labeled only via the explicit set_doc_kind face.
 # As with TOPIC_VOCAB: a controlled enum — do not invent new values;
 # extend via owner review only.
 # ---------------------------------------------------------------------------
 DOC_KIND_VOCAB: tuple = (
     "experience",
     "tutorial",
+    "manual",
     "reference",
+    "material",
 )
 
 

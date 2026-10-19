@@ -812,7 +812,7 @@ class TR4TaskBoundarySinkTests(unittest.TestCase):
         # Profile X stages an agent doc.
         out = svc.ingest([{
             "docid": "ag-x", "title": "X 的 agent 经验 条目",
-            "content": "profile X 的 agent 经验 内容 甲乙丙丁戊己庚辛",
+            "content": "profile X 的 agent 经验 内容 甲乙丙丁戊己庚辛甲",
             "status": "pending", "origin_kind": "agent",
             "source_profile": "X",
         }])

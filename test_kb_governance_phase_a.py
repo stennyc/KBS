@@ -317,7 +317,7 @@ class FilterUnsetSentinelTests(unittest.TestCase):
 
     def test_unset_matches_physically_absent_key(self):
         doc = {"docid": "f-1", "title": "哨兵 测试 文档",
-               "content": "未设置 gov_tier 的 文档 甲乙丙丁戊己庚辛",
+               "content": "未设置 gov_tier 的 文档 甲乙丙丁戊己庚辛甲甲",
                "status": "confirmed"}
         svc = self._svc([doc])
         res = svc.search("哨兵 测试 文档",
@@ -328,7 +328,7 @@ class FilterUnsetSentinelTests(unittest.TestCase):
 
     def test_unset_matches_none_valued_key(self):
         doc = {"docid": "f-2", "title": "哨兵 测试 文档",
-               "content": "gov_tier 为 None 的 文档 甲乙丙丁戊己庚辛",
+               "content": "gov_tier 为 None 的 文档 甲乙丙丁戊己庚辛甲甲甲",
                "status": "confirmed", "gov_tier": None}
         svc = self._svc([doc])
         res = svc.search("哨兵 测试 文档",
@@ -340,7 +340,7 @@ class FilterUnsetSentinelTests(unittest.TestCase):
 
     def test_exact_value_filter_unchanged(self):
         doc = {"docid": "f-3", "title": "哨兵 测试 文档",
-               "content": "archive tier 的 文档 甲乙丙丁戊己庚辛",
+               "content": "archive tier 的 文档 甲乙丙丁戊己庚辛甲甲甲甲",
                "status": "confirmed", "gov_tier": "archive"}
         svc = self._svc([doc])
         res = svc.search("哨兵 测试 文档",
@@ -360,7 +360,7 @@ class FilterUnsetSentinelTests(unittest.TestCase):
         # "unset": this test locks the mechanical .get(k)==v path so a
         # regression cannot quietly change it).
         doc = {"docid": "f-4", "title": "哨兵 测试 文档",
-               "content": "None 值 键 的 文档 甲乙丙丁戊己庚辛",
+               "content": "None 值 键 的 文档 甲乙丙丁戊己庚辛甲甲甲甲",
                "status": "confirmed", "gov_tier": None}
         svc = self._svc([doc])
         res = svc.search("哨兵 测试 文档", filters={"gov_tier": None})
@@ -421,10 +421,10 @@ class B2ConfirmDedupTests(unittest.TestCase):
         # legacy path (no scan, no mark).
         svc, base, data, audit = _svc_with_audit()
         svc.ingest([{"docid": "corp-2", "title": "唯一 标题 文档",
-                     "content": "没有 tier 键 的 文档 甲乙丙丁戊己",
+                     "content": "没有 tier 键 的 文档 甲乙丙丁戊己甲甲甲甲甲",
                      "status": "confirmed"}])
         svc.ingest([{"docid": "pend-n1", "title": "唯一 标题 文档",
-                     "content": "没有 tier 键 的 文档 甲乙丙丁戊己",
+                     "content": "没有 tier 键 的 文档 甲乙丙丁戊己甲甲甲甲甲",
                      "status": "pending", "source_profile": "coder"}])
         out = svc.confirm("pend-n1", source_profile="coder",
                           confirmed_by="user-alice")
@@ -443,10 +443,10 @@ class B2ConfirmDedupTests(unittest.TestCase):
         # a normal confirm; no new tool surface.
         svc, base, data, audit = _svc_with_audit()
         svc.ingest([{"docid": "corp-3", "title": "Redis 限流 经验",
-                     "content": "Redis 限流 配置 经验 甲乙丙丁戊己",
+                     "content": "Redis 限流 配置 经验 甲乙丙丁戊己甲甲甲甲甲",
                      "status": "confirmed", "gov_tier": "experience"}])
         svc.ingest([{"docid": "pend-o1", "title": "Redis 限流 经验",
-                     "content": "Redis 限流 配置 经验 甲乙丙丁戊己",
+                     "content": "Redis 限流 配置 经验 甲乙丙丁戊己甲甲甲甲甲",
                      "status": "pending", "gov_tier": "archive",
                      "source_profile": "coder"}])
         # Agent self-confirm hits the conflict -> downgrade.
@@ -469,10 +469,10 @@ class B2ConfirmDedupTests(unittest.TestCase):
         # only gov_tier inequality — N1's skip_near_dup scale posture).
         svc, base, data, audit = _svc_with_audit()
         svc.ingest([{"docid": "corp-s", "title": "同 tier 文档",
-                     "content": "同 tier 的 内容 甲乙丙丁戊己",
+                     "content": "同 tier 的 内容 甲乙丙丁戊己甲甲甲甲甲甲甲甲",
                      "status": "confirmed", "gov_tier": "archive"}])
         svc.ingest([{"docid": "pend-s1", "title": "同 tier 文档",
-                     "content": "同 tier 的 内容 甲乙丙丁戊己",
+                     "content": "同 tier 的 内容 甲乙丙丁戊己甲甲甲甲甲甲甲甲",
                      "status": "pending", "gov_tier": "archive",
                      "source_profile": "coder"}])
         out = svc.confirm("pend-s1", source_profile="coder",
@@ -1442,7 +1442,7 @@ class GetReadSideTests(_ut.TestCase):
         from kb_service import KbSearchService
         svc = KbSearchService(Path(d.name))
         svc.ingest([{"docid": "g-1", "title": "确定性直取测试",
-                     "content": "这是 get 读面的 verified 内容",
+                     "content": "这是 get 读面的 verified 内容甲甲甲甲甲甲甲甲",
                      "status": "confirmed", "source_profile": "coder"}])
         r = svc.get("g-1")
         assert r["found"] is True, r
@@ -1458,7 +1458,7 @@ class GetReadSideTests(_ut.TestCase):
         from kb_service import KbSearchService
         svc = KbSearchService(Path(d.name))
         svc.ingest([{"docid": "g-2", "title": "pending 行",
-                     "content": "尚未 confirm 的 staging 行",
+                     "content": "尚未 confirm 的 staging 行甲甲甲甲甲甲甲甲甲甲",
                      "status": "pending", "source_profile": "coder"}])
         r = svc.get("g-2")
         assert r["found"] is True, r
@@ -1497,7 +1497,7 @@ class GetReadSideTests(_ut.TestCase):
         from kb_service import KbSearchService
         svc = KbSearchService(Path(d.name))
         svc.ingest([{"docid": "g-stale", "title": "stale 行",
-                     "content": "超 TTL 被 sweep 成 stale_staging 的审计副本",
+                     "content": "超 TTL 被 sweep 成 stale_staging 的审计副本甲甲甲",
                      "status": "pending", "source_profile": "coder"}])
         # simulate the note-4 sweep: re-key the row to stale_staging
         import time

@@ -47,12 +47,14 @@ except Exception:  # pragma: no cover - standalone / older-host fallback
 logger = logging.getLogger("knowledge-base.distill")
 
 # KB corpus length gate (must mirror kb_service.py's confirmed-doc gate:
-# title 5-200, content 20-10000). A distill output that lands OUTSIDE the
-# gate (LLM wrote MORE than it cut, or the raw text was already over the
-# content ceiling) is rejected in favour of the ORIGINAL text's gate
-# verdict — distillation must never push a doc across a gate the raw
-# version would have passed, or hide one it would have failed silently.
-_DISTILL_CONTENT_MIN = 20
+# title 5-200, content 60-10000 — the 2026-10-19 owner triviality floor
+# raised the content minimum from 20 to 60: 知识库不收录琐碎资料). A
+# distill output that lands OUTSIDE the gate (LLM wrote MORE than it cut,
+# or the raw text was already over the content ceiling) is rejected in
+# favour of the ORIGINAL text's gate verdict — distillation must never push
+# a doc across a gate the raw version would have passed, or hide one it
+# would have failed silently.
+_DISTILL_CONTENT_MIN = 60
 _DISTILL_CONTENT_MAX = 10000
 _DISTILL_TITLE_MIN = 5
 _DISTILL_TITLE_MAX = 200
@@ -250,14 +252,16 @@ def distill_content(main_runtime: Optional[Dict[str, Any]],
     if not d_content:
         verdict["reason"] = "parse_failed:empty_content"
         return verdict  # use_original stays True
-    # Structure gate (mirrors kb_service's confirmed-doc length gate): the
-    # distilled body must itself pass the gate to be stored — LLM wrote
-    # MORE than it cut, or shrank it below the content floor, or blew the
-    # title window -> reject this output, fall back to the ORIGINAL text's
-    # gate verdict (the caller re-checks the original against the same
-    # gate; a raw-text gate failure is a pre-existing condition, not a
-    # regression this face introduced).
-    if not (_DISTILL_CONTENT_MIN <= len(d_content) <= _DISTILL_CONTENT_MAX):
+    # Structure gate (mirrors kb_service's confirmed-doc length gate —
+    # measured in UTF-8 BYTES, same unit as _CONTENT_MIN in kb_service):
+    # the distilled body must itself pass the gate to be stored — LLM
+    # wrote MORE than it cut, or shrank it below the content floor, or
+    # blew the title window -> reject this output, fall back to the
+    # ORIGINAL text's gate verdict (the caller re-checks the original
+    # against the same gate; a raw-text gate failure is a pre-existing
+    # condition, not a regression this face introduced).
+    if not (_DISTILL_CONTENT_MIN
+            <= len(d_content.encode("utf-8")) <= _DISTILL_CONTENT_MAX):
         verdict["rejected_reason"] = "content_length_gate"
         return verdict
     title_final = d_title or raw_title

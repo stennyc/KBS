@@ -51,7 +51,7 @@ class DocKindAxisTests(unittest.TestCase):
         out = svc.ingest([{
             "docid": "dk-tutorial",
             "title": "教程形态 部署手册 步骤一二三",
-            "content": "这篇是可照做的操作手册 第一步 第二步 第三步 部署",
+            "content": "这篇是可照做的操作手册 第一步 第二步 第三步 部署 若干字 填充 段落 覆盖 场景 DKFILL甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲",
             "status": "confirmed",
             "doc_kind": "tutorial",
         }])
@@ -71,7 +71,7 @@ class DocKindAxisTests(unittest.TestCase):
         out = svc.ingest([{
             "docid": "dk-unlabeled",
             "title": "未标注形态 的经验文档 测试用",
-            "content": "这篇没有标注 doc_kind 只有 标题 和 正文 内容 若干",
+            "content": "这篇没有标注 doc_kind 只有 标题 和 正文 内容 若干字 扩充 长度门 覆盖 场景 说明 DKU1FILL甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲",
             "status": "confirmed",
         }])
         self.assertIn("dk-unlabeled", out["ingested"])
@@ -123,7 +123,7 @@ class DocKindStagingRoundtripTests(unittest.TestCase):
         # 先算出"key 缺席"等价文档的确定性 docid（roundtrip 前）
         base_doc = {
             "title": "跨层 一致性 测试 文档",
-            "content": "这篇会走 pending -> jsonl roundtrip -> confirm 的 路径 若干字",
+            "content": "这篇会走 pending -> jsonl roundtrip -> confirm 的 路径 若干字 扩充 至长度门 覆盖 场景 说明 DOKIDFILL",
             "status": "pending",
         }
         docid_expected = _deterministic_docid(base_doc)
@@ -171,26 +171,26 @@ class DocKindTopicSearchRegressionTests(unittest.TestCase):
         out = svc.ingest([{
             "docid": "dk-agent-1",
             "title": "agent 经验 部署 踩坑 记录",
-            "content": "这是一条 agent 经验 部署 时踩的坑 若干字 内容",
+            "content": "这是一条 agent 经验 部署 时踩的坑 若干字 内容 DKA1FILL甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲",
             "status": "confirmed",
             "origin_kind": "agent",
             "topic": "deployment",
             "doc_kind": "tutorial",
         }, {
-            "docid": "dk-agent-2",
+            "docid": "dk-agent-2x",
             "title": "agent 经验 部署 另一条",
-            "content": "第二条 agent 经验 部署 相关 内容 若干字 不同",
+            "content": "第二条 agent 经验 部署 相关 内容 若干字 不同 DKA2FILL甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲",
             "status": "confirmed",
             "origin_kind": "agent",
             "topic": "deployment",
         }])
-        self.assertEqual(sorted(out["ingested"]), ["dk-agent-1", "dk-agent-2"])
+        self.assertEqual(sorted(out["ingested"]), ["dk-agent-1", "dk-agent-2x"])
         kwargs = topic_search_service_args("部署", "deployment", 5)
         self.assertEqual(kwargs["filters"].get("origin_kind"), "agent")
         self.assertEqual(kwargs["filters"].get("topic"), "deployment")
         res = svc.search(**kwargs)
         ids = {r["doc_id"] for r in res["data"]["results"]}
-        self.assertEqual(ids, {"dk-agent-1", "dk-agent-2"},
+        self.assertEqual(ids, {"dk-agent-1", "dk-agent-2x"},
                          "the agent-partition topic search must be "
                          "independent of doc_kind (both docs hit regardless "
                          "of whether doc_kind is set)")
@@ -199,7 +199,7 @@ class DocKindTopicSearchRegressionTests(unittest.TestCase):
         res_bare = svc.search("部署", top_k=5)
         self.assertEqual(
             {r["doc_id"] for r in res_bare["data"]["results"]},
-            {"dk-agent-1", "dk-agent-2"})
+            {"dk-agent-1", "dk-agent-2x"})
 
 
 # ---------------------------------------------------------------------------

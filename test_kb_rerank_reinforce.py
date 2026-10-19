@@ -323,7 +323,7 @@ def test_explicit_reinforce_bumps_count_auto_prefetch_does_not():
         base = Path(d.name)
         svc = KbSearchService(base)
         svc.ingest([
-            {"docid": "d1", "title": "Kafka 重平衡", "content": "Kafka 重平衡 机制 说明 长度足够 甲乙丙丁",
+            {"docid": "d1", "title": "Kafka 重平衡", "content": "Kafka 重平衡 机制 说明 长度足够 甲乙丙丁 填充 段落 若干字 扩充 内容 标记 词 五",
              "status": "confirmed"},
         ])
         # Before any reinforce: reference count is 0.
@@ -357,7 +357,7 @@ def test_reinforce_anchor_miss_does_not_record():
         svc = KbSearchService(base)
         svc.ingest([
             {"docid": "d1", "title": "Kafka 重平衡",
-             "content": "Kafka 重平衡 机制 说明 长度足够 甲乙丙丁",
+             "content": "Kafka 重平衡 机制 说明 长度足够 甲乙丙丁 填充 段落 若干字 扩充 内容 标记 词 五",
              "status": "confirmed"},
         ])
         # Follow-up text that does NOT mention the doc's title/anchors.
@@ -677,33 +677,35 @@ def test_search_uses_persisted_graph_when_activation_gate_met(tmp_path):
     svc = KbSearchService(tmp_path)
     # 20 genuinely DISTINCT confirmed docs (each clears the length gate AND
     # the near-dup gate) so corpus participation can clear the activation
-    # gate.
+    # gate. Contents are padded to >= 60 UTF-8 bytes (the 2026-10-19
+    # triviality floor) with i-specific filler so the near-dup containment
+    # gate does not kill the same-template docs.
     _DISTINCT = [
-        ("d0", "部署 redis 缓存穿透方案", "用布隆过滤器挡住不存在的 key，避免穿透到数据库，设置默认空值占位防止击穿"),
-        ("d1", "kafka 消费者重平衡风暴", "session.timeout 调短后频繁 rebalance，改用 static group.id 固定成员避免 rebalance"),
-        ("d2", "mysql 主从延迟排查", "semi-sync 复制下 slave 落后 30s，调大 sync 超时并限制大事务"),
-        ("d3", "nginx 499 错误增多", "客户端在 keepalive 超时前断开，upstream 响应慢于前端，调大 client_header_timeout"),
-        ("d4", "zookeeper leader 选举失败", "myid 重复或 2888 端口不通，检查 servers 配置与防火墙"),
-        ("d5", "spark 任务 OOM 重启", "executor 堆 4g 不够，调大 spark.executor.memory 并减小 shuffle 分区数"),
-        ("d6", "flink checkpoint 超时", "barrier 对齐慢，调大 execution.checkpointing.interval 并开启 unaligned"),
-        ("d7", "rabbitmq 内存告警", "consumer 处理慢导致内存堆积，设 memory.high 阈值触发流控"),
-        ("d8", "elasticsearch 集群黄", "分片未分配，节点磁盘水位超 90%，加盘或调低 high watermark"),
-        ("d9", "prometheus 抓取超时", "target 过多单 scrape 超时，分批抓取并加大 scrape_timeout"),
-        ("d10", "docker 容器重启循环", "exit code 137 是 OOMKilled，调大 memory limit 或优化应用"),
-        ("d11", "kubernetes pod CrashLoop", "liveness 探针太严，放宽 initialDelay 与 failureThreshold"),
-        ("d12", "jenkins 构建队列堆积", "agent 数不够，加 executor 并限制并发 pipeline"),
-        ("d13", "vault unseal 失败", "key 分片不足，凑齐 threshold 个分片完成 unseal"),
-        ("d14", "consul 服务不健康", "health check 间隔太短误报，调整 interval 与 timeout"),
-        ("d15", "etcd 磁盘 I/O 高", "fsync 慢，换 SSD 或增大 db.quota 减少 compaction 频率"),
-        ("d16", "minio 上传 503", "磁盘空间满，清理旧 bucket 或加节点扩容"),
-        ("d17", "mongodb 慢查询", "缺索引全表扫描，建复合索引并 explain 确认 plan"),
-        ("d18", "rabbitmq 队列积压", "consumer 消费慢或消息体过大，扩容 consumer 并减小消息"),
-        ("d19", "cassandra 读取超时", "replication factor 不足致修复慢，调大 RF 与 read.repair"),
-        ("d20", "rabbitmq 磁盘满", "镜像队列占满磁盘，关闭镜像或清旧队列释放空间"),
-        ("d21", "kafka ISR 抖动", "broker 掉线触发 ISR 缩减，调大 min.insync.replicas 避免"),
-        ("d22", "redis 大 key 阻塞", "hgetall 大 hash 阻塞主线程，改 hscan 分批遍历"),
-        ("d23", "mysql 锁等待超时", "innodb_lock_wait_timeout 内拿不到行锁，查阻塞会话"),
-        ("d24", "nginx 连接耗尽", "worker 文件描述符上限，调大 worker_connections 与 limit"),
+        ("d0", "部署 redis 缓存穿透方案", "用布隆过滤器挡住不存在的 key，避免穿透到数据库，设置默认空值占位防止击穿 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 零 完整 覆盖 文档"),
+        ("d1", "kafka 消费者重平衡风暴", "session.timeout 调短后频繁 rebalance，改用 static group.id 固定成员避免 rebalance 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 一 完整 覆盖 文档"),
+        ("d2", "mysql 主从延迟排查", "semi-sync 复制下 slave 落后 30s，调大 sync 超时并限制大事务 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 二 完整 覆盖 文档"),
+        ("d3", "nginx 499 错误增多", "客户端在 keepalive 超时前断开，upstream 响应慢于前端，调大 client_header_timeout 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 三 完整 覆盖 文档"),
+        ("d4", "zookeeper leader 选举失败", "myid 重复或 2888 端口不通，检查 servers 配置与防火墙 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 四 完整 覆盖 文档"),
+        ("d5", "spark 任务 OOM 重启", "executor 堆 4g 不够，调大 spark.executor.memory 并减小 shuffle 分区数 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 五 完整 覆盖 文档"),
+        ("d6", "flink checkpoint 超时", "barrier 对齐慢，调大 execution.checkpointing.interval 并开启 unaligned 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 六 完整 覆盖 文档"),
+        ("d7", "rabbitmq 内存告警", "consumer 处理慢导致内存堆积，设 memory.high 阈值触发流控 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 七 完整 覆盖 文档"),
+        ("d8", "elasticsearch 集群黄", "分片未分配，节点磁盘水位超 90%，加盘或调低 high watermark 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 八 完整 覆盖 文档"),
+        ("d9", "prometheus 抓取超时", "target 过多单 scrape 超时，分批抓取并加大 scrape_timeout 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 九 完整 覆盖 文档"),
+        ("d10", "docker 容器重启循环", "exit code 137 是 OOMKilled，调大 memory limit 或优化应用 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 十 完整 覆盖 文档"),
+        ("d11", "kubernetes pod CrashLoop", "liveness 探针太严，放宽 initialDelay 与 failureThreshold 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 十一 完整 覆盖 文档"),
+        ("d12", "jenkins 构建队列堆积", "agent 数不够，加 executor 并限制并发 pipeline 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 十二 完整 覆盖 文档"),
+        ("d13", "vault unseal 失败", "key 分片不足，凑齐 threshold 个分片完成 unseal 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 十三 完整 覆盖 文档"),
+        ("d14", "consul 服务不健康", "health check 间隔太短误报，调整 interval 与 timeout 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 十四 完整 覆盖 文档"),
+        ("d15", "etcd 磁盘 I/O 高", "fsync 慢，换 SSD 或增大 db.quota 减少 compaction 频率 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 十五 完整 覆盖 文档"),
+        ("d16", "minio 上传 503", "磁盘空间满，清理旧 bucket 或加节点扩容 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 十六 完整 覆盖 文档"),
+        ("d17", "mongodb 慢查询", "缺索引全表扫描，建复合索引并 explain 确认 plan 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 十七 完整 覆盖 文档"),
+        ("d18", "rabbitmq 队列积压", "consumer 消费慢或消息体过大，扩容 consumer 并减小消息 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 十八 完整 覆盖 文档"),
+        ("d19", "cassandra 读取超时", "replication factor 不足致修复慢，调大 RF 与 read.repair 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 十九 完整 覆盖 文档"),
+        ("d20", "rabbitmq 磁盘满", "镜像队列占满磁盘，关闭镜像或清旧队列释放空间 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 二十 完整 覆盖 文档"),
+        ("d21", "kafka ISR 抖动", "broker 掉线触发 ISR 缩减，调大 min.insync.replicas 避免 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 二十一 完整 覆盖 文档"),
+        ("d22", "redis 大 key 阻塞", "hgetall 大 hash 阻塞主线程，改 hscan 分批遍历 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 二十二 完整 覆盖 文档"),
+        ("d23", "mysql 锁等待超时", "innodb_lock_wait_timeout 内拿不到行锁，查阻塞会话 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 二十三 完整 覆盖 文档"),
+        ("d24", "nginx 连接耗尽", "worker 文件描述符上限，调大 worker_connections 与 limit 填充 段落 若干字 扩充 长度门 之上 合格 场景 说明 标记 词 二十四 完整 覆盖 文档"),
     ]
     for t, title, content in _DISTINCT:
         svc.ingest([{"docid": t, "title": title, "content": content,

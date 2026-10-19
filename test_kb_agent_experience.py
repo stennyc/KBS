@@ -84,7 +84,7 @@ class TR1Tests(unittest.TestCase):
         svc, base, data, audit = _svc_with_audit()
         out = svc.ingest([{
             "docid": "u-1", "title": "用户直接录入",
-            "content": "用户 手动 录入的 知识 条目 甲乙丙丁戊己",
+            "content": "用户 手动 录入的 知识 条目 甲乙丙丁戊己甲甲",
             "status": "confirmed", "origin_kind": "user",
         }])
         self.assertEqual(out["ingested"], ["u-1"])

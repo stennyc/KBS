@@ -23,13 +23,13 @@ from kb_service import KbSearchService, render  # noqa: E402
 
 DOCS = [
     {"docid": "doc-1", "title": "数据管道架构",
-     "content": "数据管道 批处理 流处理 Lambda 架构 抽取 转换 加载",
+     "content": "数据管道 批处理 流处理 Lambda 架构 抽取 转换 加载 三段式 架构 说明 若干字",
      "doc_type": "guide", "status": "confirmed"},
     {"docid": "doc-2", "title": "Docker 容器",
-     "content": "Docker 开源 容器引擎 轻量 可移植 打包",
+     "content": "Docker 开源 容器引擎 轻量 可移植 打包 隔离 镜像 构建 部署 说明 若干字",
      "doc_type": "reference", "status": "confirmed"},
     {"docid": "doc-3", "title": "Kafka 消息队列",
-     "content": "Kafka 分布式 事件流 高吞吐 低延迟 发布 订阅",
+     "content": "Kafka 分布式 事件流 高吞吐 低延迟 发布 订阅 分区 复制 消费组 机制 说明 若干字",
      "doc_type": "guide", "status": "confirmed"},
 ]
 
@@ -96,7 +96,7 @@ class E2ETests(unittest.TestCase):
         import uuid as _uuid
         svc = self._svc("e2e7")
         doc = {"title": "Redis 缓存",
-               "content": "唯一内容 甲 乙 丙 丁 戊 己 庚 辛 壬 癸 子 丑",
+               "content": "唯一内容 甲 乙 丙 丁 戊 己 庚 辛 壬 癸 子 丑 寅 卯 扩充 长度门 之上",
                "status": "confirmed"}
         svc.ingest([doc])
         res = svc.search("Redis 缓存", top_k=1)

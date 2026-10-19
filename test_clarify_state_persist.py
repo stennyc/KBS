@@ -132,7 +132,7 @@ class TestRestartSurvival(unittest.TestCase):
             {
                 "docid": "doc-A",
                 "title": "决定采用方案 B",
-                "content": "讨论完，最终决定采用方案 B，否决 A。" * 3,
+                "content": "讨论完，最终决定采用方案 B，否决 A。甲甲甲" * 3,
                 "status": "pending",
                 "origin_kind": "auto",
                 "kb_class": "decision",

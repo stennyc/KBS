@@ -193,7 +193,7 @@ class TestStagingIsolation:
 
     def test_pending_doc_not_searchable(self, tmp_path):
         svc = self._svc(str(tmp_path))
-        doc = {"title": "t", "content": "这是一段足够长的待确认内容" * 3,
+        doc = {"title": "待确认文档", "content": "这是一段足够长的待确认内容甲甲甲甲甲甲甲" * 3,
                "status": "pending"}
         out = svc.ingest([doc])
         assert out["staged"], "pending doc must land in staging"
@@ -205,7 +205,7 @@ class TestStagingIsolation:
 
     def test_confirm_then_searchable(self, tmp_path):
         svc = self._svc(str(tmp_path))
-        doc = {"title": "t", "content": "这是一段足够长的待确认内容" * 3,
+        doc = {"title": "待确认文档", "content": "这是一段足够长的待确认内容甲甲甲甲甲甲甲" * 3,
                "status": "pending"}
         staged = svc.ingest([doc])["staged"]
         assert len(staged) == 1

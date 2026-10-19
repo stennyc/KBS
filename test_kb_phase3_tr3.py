@@ -434,15 +434,15 @@ class TR3LiveServiceTests(unittest.TestCase):
         svc = KbSearchService(data, audit_path=audit)
         svc.ingest([
             {"docid": "ag-msg", "title": "messaging 网关 经验 条目",
-             "content": "网关 messaging 重试 预算 经验 甲乙丙丁戊己",
+             "content": "网关 messaging 重试 预算 经验 甲乙丙丁戊己甲甲",
              "status": "confirmed", "origin_kind": "agent",
              "topic": "messaging", "source_profile": "coder"},
             {"docid": "ag-dep", "title": "deployment 网关 经验 条目",
-             "content": "网关 deployment 灰度 发布 经验 庚辛壬癸甲乙",
+             "content": "网关 deployment 灰度 发布 经验 庚辛壬癸甲乙甲",
              "status": "confirmed", "origin_kind": "agent",
              "topic": "deployment", "source_profile": "coder"},
             {"docid": "us-msg", "title": "user 录入 网关 知识",
-             "content": "网关 知识 用户 录入 甲乙丙丁",
+             "content": "网关 知识 用户 录入 甲乙丙丁甲甲甲甲甲甲甲",
              "status": "confirmed", "origin_kind": "user",
              "topic": "messaging", "source_profile": "coder"},
         ])

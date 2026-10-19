@@ -30,15 +30,15 @@ from cold_layer import PyterrierBackend  # noqa: E402  (JVM-free in-memory cold 
 
 DOCS = [
     {"id": "1", "title": "数据管道架构", "content": "数据管道 批处理 流处理 Lambda 架构 抽取 转换 加载"},
-    {"id": "2", "title": "Docker 容器", "content": "Docker 开源 容器引擎 轻量 可移植 打包"},
-    {"id": "3", "title": "Kafka 消息队列", "content": "Apache Kafka 分布式 事件流 高吞吐 低延迟"},
+    {"id": "2", "title": "Docker 容器", "content": "Docker 开源 容器引擎 轻量 可移植 打包甲甲甲甲"},
+    {"id": "3", "title": "Kafka 消息队列", "content": "Apache Kafka 分布式 事件流 高吞吐 低延迟甲甲甲"},
 ]
 
 # Docs for the two-layer suite carry an EXTERNAL docid (the cross-layer join key).
 DOCS_EXT = [
-    {"docid": "doc-a", "title": "数据管道架构", "content": "数据管道 批处理 流处理 Lambda 架构"},
-    {"docid": "doc-b", "title": "Docker 容器", "content": "Docker 开源 容器引擎 轻量 可移植"},
-    {"docid": "doc-c", "title": "Kafka 消息队列", "content": "Kafka 分布式 事件流 高吞吐 低延迟"},
+    {"docid": "doc-a", "title": "数据管道架构", "content": "数据管道 批处理 流处理 Lambda 架构甲甲甲甲甲"},
+    {"docid": "doc-b", "title": "Docker 容器", "content": "Docker 开源 容器引擎 轻量 可移植甲甲甲甲甲甲"},
+    {"docid": "doc-c", "title": "Kafka 消息队列", "content": "Kafka 分布式 事件流 高吞吐 低延迟甲甲甲甲甲"},
 ]
 
 
@@ -85,7 +85,7 @@ class ContractTests(unittest.TestCase):
     # 2
     def test_update_adds_new_docs(self):
         be = self._mk()
-        be.update([{"id": "4", "title": "Redis 缓存", "content": "键值 缓存 过期 穿透"}])
+        be.update([{"id": "4", "title": "Redis 缓存", "content": "键值 缓存 过期 穿透甲甲甲甲甲甲甲甲甲甲甲"}])
         self.assertEqual(be.search("Redis 缓存", top_k=1)[0].doc_id, "4")
 
     # 3
@@ -103,7 +103,7 @@ class ContractTests(unittest.TestCase):
     #      Score-sign checks belong in each backend's own unit tests.)
     def test_single_doc_corpus(self):
         be = InMemoryStubBackend(Path(tempfile.gettempdir()) / "single")
-        be.update([{"id": "9", "title": "Hermes", "content": "Python AI agent 框架"}])
+        be.update([{"id": "9", "title": "Hermes", "content": "Python AI agent 框架甲甲甲甲甲甲甲甲甲甲甲甲甲"}])
         res = be.search("Python 框架", top_k=1)
         self.assertEqual(len(res), 1, "single-doc corpus returned empty (B1 regression)")
         self.assertEqual(res[0].doc_id, "9")
@@ -116,7 +116,7 @@ class ContractTests(unittest.TestCase):
         be.persist()
         be2 = InMemoryStubBackend(path)
         be2.load()
-        be2.update([{"id": "5", "title": "Spark", "content": "大数据 分析 引擎"}])
+        be2.update([{"id": "5", "title": "Spark", "content": "大数据 分析 引擎甲甲甲甲甲甲甲甲甲甲甲甲甲"}])
         old = be2.search("Docker 容器", top_k=1)
         new = be2.search("Spark 大数据", top_k=1)
         self.assertEqual(old[0].doc_id, "2")
@@ -194,7 +194,7 @@ class TwoLayerContractTests(unittest.TestCase):
     # 11 (single tool call returns ONE unified full-text top-k payload)
     def test_single_shot_unified_payload(self):
         be = make_two_layer()
-        be.update([{"docid": "doc-new", "title": "新记忆", "content": "独特 关键词 记忆 沉淀"}])
+        be.update([{"docid": "doc-new", "title": "新记忆", "content": "独特 关键词 记忆 沉淀甲甲甲甲甲甲甲甲甲甲"}])
         res = be.search("记忆 沉淀 独特", top_k=5)
         # Every result is a SearchResult with full content + a source_layer tag.
         for r in res:
@@ -206,7 +206,7 @@ class TwoLayerContractTests(unittest.TestCase):
     def test_hot_layer_empty_no_crash(self):
         hot = HotLayerBackend()          # nothing written to hot yet
         cold = InMemoryStubBackend(Path(tempfile.gettempdir()) / "c12.pkl")
-        cold.update([{"docid": "d1", "title": "Kafka", "content": "Kafka 分布式 事件流"}])
+        cold.update([{"docid": "d1", "title": "Kafka", "content": "Kafka 分布式 事件流甲甲甲甲甲甲甲甲甲甲甲甲"}])
         be = TwoLayerBackend(hot, cold)
         res = be.search("Kafka 事件流", top_k=3)
         # Cold answers; hot contributes nothing but must not break the merge.
@@ -222,7 +222,7 @@ class TwoLayerContractTests(unittest.TestCase):
         t.start()
         for i in range(50):
             be.update([{"docid": f"mem{i}", "title": "x",
-                        "content": "数据管道 架构 沉淀"}])
+                        "content": "数据管道 架构 沉淀甲甲甲甲甲甲甲甲甲甲甲甲"}])
         t.join()
         # Every result — hot OR cold — carries a shared_generation tag (the
         # dual-layer RCU marker). A torn read would surface two different
@@ -238,8 +238,8 @@ class TwoLayerContractTests(unittest.TestCase):
     # 14 (generation handoff: a settled doc is not double-counted in both layers)
     def test_settle_generation_atomic_handoff(self):
         be = make_two_layer(settle_threshold=1)   # settle fires on the 2nd write
-        be.update([{"docid": "doc-1", "title": "A", "content": "记忆 沉淀 唯一 标记"}])
-        be.update([{"docid": "doc-2", "title": "B", "content": "记忆 沉淀 唯一 标记 二"}])
+        be.update([{"docid": "doc-1", "title": "A", "content": "记忆 沉淀 唯一 标记甲甲甲甲甲甲甲甲甲甲甲"}])
+        be.update([{"docid": "doc-2", "title": "B", "content": "记忆 沉淀 唯一 标记 二甲甲甲甲甲甲甲甲甲甲"}])
         # threshold=1: after the 2nd write hot has 2 > 1 -> oldest (doc-1) is
         # settled to cold and dropped from hot. Both docs must still be findable.
         res = be.search("唯一 标记", top_k=10)
@@ -254,7 +254,7 @@ class TwoLayerContractTests(unittest.TestCase):
         be = make_two_layer(settle_threshold=2)
         # Write doc-a into hot, then settle it so a copy also lives in cold.
         be.update([{"docid": "doc-a", "title": "数据管道架构",
-                    "content": "数据管道 批处理 流处理 Lambda 架构"}])
+                    "content": "数据管道 批处理 流处理 Lambda 架构甲甲甲甲甲"}])
         be.update([{"docid": "doc-z", "title": "filler", "content": "无关 填充 词"}])
         res = be.search("数据管道 架构", top_k=10)
         a_hits = [r for r in res if r.doc_id == "doc-a"]
@@ -278,11 +278,11 @@ class ColdLayerRealTests(unittest.TestCase):
     def _seed(self, be: PyterrierBackend) -> None:
         be.update([
             {"docid": "d1", "title": "数据管道架构",
-             "content": "数据管道 批处理 流处理 Lambda 架构"},
+             "content": "数据管道 批处理 流处理 Lambda 架构甲甲甲甲甲"},
             {"docid": "d2", "title": "Docker 容器",
-             "content": "Docker 开源 容器引擎 轻量 可移植"},
+             "content": "Docker 开源 容器引擎 轻量 可移植甲甲甲甲甲甲"},
             {"docid": "d3", "title": "Kafka 消息队列",
-             "content": "Kafka 分布式 事件流 高吞吐 低延迟"},
+             "content": "Kafka 分布式 事件流 高吞吐 低延迟甲甲甲甲甲"},
         ])
 
     # ① pickle round-trip: persist -> new instance load -> old docs searchable
@@ -317,9 +317,9 @@ class ColdLayerRealTests(unittest.TestCase):
         cold = self._cold("c3")
         be = TwoLayerBackend(hot, cold, settle_threshold=1)  # settle every write
         be.update([{"docid": "hot-only", "title": "新记忆",
-                    "content": "即时 命中 标记 甲"}])
+                    "content": "即时 命中 标记 甲甲甲甲甲甲甲甲甲甲甲甲甲"}])
         be.update([{"docid": "settled", "title": "沉淀记忆",
-                    "content": "即时 命中 标记 乙"}])
+                    "content": "即时 命中 标记 乙甲甲甲甲甲甲甲甲甲甲甲甲"}])
         # 'settled' was pushed into cold by the handoff; it must be findable now.
         res = be.search("即时 命中 标记", top_k=10)
         ids = [r.doc_id for r in res]

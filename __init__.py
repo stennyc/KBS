@@ -234,7 +234,8 @@ INGEST_SCHEMA = {
                         "doc_kind": {
                             "type": ["string", "null"],
                             "enum": ["experience", "tutorial",
-                                     "reference", None],
+                                     "manual", "reference", "material",
+                                     None],
                             "description": (
                                 "Document-SHAP axis (orthogonal to "
                                 "topic, which is a task-domain axis — a "
@@ -244,12 +245,25 @@ INGEST_SCHEMA = {
                                 "pitfall/post-mortem; 'tutorial' = "
                                 "forward-looking followable procedure "
                                 "(SOP/runbook, 'unused until needed'); "
-                                "'reference' = pure reference fact. "
+                                "'manual' = reference manual / runbook "
+                                "(a system's how-to, not a step-by-step "
+                                "lesson); 'reference' = pure reference "
+                                "fact (no judgement, no steps); "
+                                "'material' = teaching material / book "
+                                "excerpt (long-form study content). "
                                 "Optional — omit for an unlabeled doc "
                                 "(doc_kind=None, NOT implicitly "
                                 "'experience'; no back-fill of legacy "
                                 "docs). Valid values: "
-                                "kb_ingest_rules.DOC_KIND_VOCAB."
+                                "kb_ingest_rules.DOC_KIND_VOCAB. "
+                                "Governance (owner 2026-10-19): a "
+                                "user-specified doc_kind (this face) "
+                                "lands as-is — no review gate; the "
+                                "owner-review constraint applies to "
+                                "AGENT auto-captured docs (which "
+                                "default to doc_kind=None and are "
+                                "labeled only via the explicit "
+                                "knowledge_base_set_doc_kind face)."
                             ),
                         },
                     },
@@ -638,13 +652,17 @@ SET_DOC_KIND_SCHEMA = {
         "would trip the B2 near-duplicate gate; this one does not, "
         "because it never goes through ingest()'s content path). "
         "doc_kind must be one of kb_ingest_rules.DOC_KIND_VOCAB "
-        "(experience / tutorial / reference) or null to CLEAR the "
-        "label (back to unlabeled). Out-of-vocabulary values are "
-        "rejected and audited, not silently accepted. The doc's "
-        "docid is never recomputed — the row is mutated in place and "
-        "re-persisted under the same docid (the proven "
-        "set_premise_status in-place pattern). Returns "
-        "{status, doc_id, from_kind, to} on success; "
+        "(experience / tutorial / manual / reference / material) or "
+        "null to CLEAR the label (back to unlabeled). Out-of-"
+        "vocabulary values are rejected and audited, not silently "
+        "accepted. The doc's docid is never recomputed — the row is "
+        "mutated in place and re-persisted under the same docid (the "
+        "proven set_premise_status in-place pattern). Governance "
+        "(owner 2026-10-19): this face IS the owner-review action for "
+        "labeling — agent auto-captured docs default to doc_kind=None "
+        "and get a label only through this explicit call (or a user "
+        "ingest with doc_kind set, which is user-specified and lands "
+        "as-is). Returns {status, doc_id, from_kind, to} on success; "
         "{status:'error', error} on not_found / invalid_doc_kind."),
     "parameters": {
         "type": "object",
@@ -658,15 +676,18 @@ SET_DOC_KIND_SCHEMA = {
             },
             "doc_kind": {
                 "type": ["string", "null"],
-                "enum": ["experience", "tutorial", "reference", None],
+                "enum": ["experience", "tutorial", "manual", "reference",
+                         "material", None],
                 "description": (
                     "The new document-SHAP label. 'experience' = "
                     "retrospective pitfall/post-mortem; 'tutorial' = "
                     "forward-looking followable procedure (SOP/"
-                    "runbook); 'reference' = pure reference fact. "
-                    "Pass null to clear the label (back to "
-                    "unlabeled). Must be a DOC_KIND_VOCAB value or "
-                    "null; anything else is rejected."
+                    "runbook); 'manual' = reference manual / runbook; "
+                    "'reference' = pure reference fact; 'material' = "
+                    "teaching material / book excerpt. Pass null to "
+                    "clear the label (back to unlabeled). Must be a "
+                    "DOC_KIND_VOCAB value or null; anything else is "
+                    "rejected."
                 ),
             },
         },

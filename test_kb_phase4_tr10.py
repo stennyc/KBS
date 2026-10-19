@@ -123,7 +123,7 @@ class TR10HappyPathTests(unittest.TestCase):
         svc = KbSearchService(data, audit_path=audit)
         svc.ingest([
             {"docid": "ag-x", "title": "网关重试预算经验条目甲乙丙",
-             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸",
+             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸甲",
              "status": "confirmed", "origin_kind": "agent",
              "topic": "messaging", "source_profile": "coder"},
         ])
@@ -278,7 +278,7 @@ class TR10CrossProfileRejectionTests(unittest.TestCase):
         svc = KbSearchService(data, audit_path=audit)
         svc.ingest([
             {"docid": "ag-y", "title": "网关灰度发布经验条目庚辛壬",
-             "content": "网关 灰度 发布 经验 庚辛壬癸甲乙 子丑寅",
+             "content": "网关 灰度 发布 经验 庚辛壬癸甲乙 子丑寅甲甲",
              "status": "confirmed", "origin_kind": "agent",
              "topic": "deployment", "source_profile": "devops"},
         ])
@@ -339,7 +339,7 @@ class TR10NonAgentOriginRejectionTests(unittest.TestCase):
         svc = KbSearchService(data, audit_path=audit)
         svc.ingest([
             {"docid": docid, "title": "网关知识录入条目内容 " + docid,
-             "content": "网关 知识 用户 录入 内容 甲乙丙丁戊己 " + docid,
+             "content": "网关 知识 用户 录入 内容 甲乙丙丁戊己 甲甲" + docid,
              "status": "confirmed", "origin_kind": origin_kind,
              "topic": "messaging", "source_profile": "coder"},
         ])
@@ -443,7 +443,7 @@ class TR10NearDupInteractionTests(unittest.TestCase):
         svc = KbSearchService(data, audit_path=audit)
         svc.ingest([
             {"docid": "ag-x", "title": "网关重试预算经验条目甲乙丙",
-             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸",
+             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸甲",
              "status": "confirmed", "origin_kind": "agent",
              "topic": "messaging", "source_profile": "coder"},
         ])
@@ -451,7 +451,7 @@ class TR10NearDupInteractionTests(unittest.TestCase):
         # different source_profile) is a near-dup and gets blocked:
         re = svc.ingest([
             {"docid": "ag-x-twin", "title": "网关重试预算经验条目甲乙丙",
-             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸",
+             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸甲",
              "status": "confirmed", "origin_kind": "agent",
              "source_profile": None},
         ])
@@ -478,13 +478,13 @@ class TR10NearDupInteractionTests(unittest.TestCase):
         svc = KbSearchService(data, audit_path=audit)
         svc.ingest([
             {"docid": "base-1", "title": "网关重试预算经验条目甲乙丙",
-             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸",
+             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸甲",
              "status": "confirmed", "origin_kind": "auto"},
         ])
         # near-duplicate of base-1: blocked
         r1 = svc.ingest([
             {"docid": "base-1-dup", "title": "网关重试预算经验条目甲乙丙",
-             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸",
+             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸甲",
              "status": "confirmed", "origin_kind": "auto"},
         ])
         self.assertEqual(r1["ingested"], [])
@@ -606,7 +606,7 @@ class TR10PremiseFalsifiedRejectionTests(unittest.TestCase):
         svc = KbSearchService(data, audit_path=audit)
         svc.ingest([
             {"docid": docid, "title": "网关重试预算经验条目甲乙丙",
-             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸",
+             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸甲",
              "status": "confirmed", "origin_kind": "agent",
              "topic": "messaging", "source_profile": "coder",
              "premise_status": premise_status},
@@ -691,7 +691,7 @@ class TR10IdempotentRepeatTests(unittest.TestCase):
         svc = KbSearchService(data, audit_path=audit)
         svc.ingest([
             {"docid": "ag-x", "title": "网关重试预算经验条目甲乙丙",
-             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸",
+             "content": "网关 重试 预算 经验 甲乙丙丁戊己 庚辛壬癸甲",
              "status": "confirmed", "origin_kind": "agent",
              "topic": "messaging", "source_profile": "coder"},
         ])

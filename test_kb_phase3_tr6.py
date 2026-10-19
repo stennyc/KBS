@@ -486,7 +486,7 @@ def test_service_search_passes_topic_scores_to_rrf(monkeypatch=None):
     with tempfile.TemporaryDirectory() as td:
         svc = KbSearchService(Path(td))
         svc.ingest([{"title": "Kafka 升级决策 2024-03-15",
-                     "content": "拍板升级到 Kafka 3.6.1，原因与权衡详述",
+                     "content": "拍板升级到 Kafka 3.6.1，原因与权衡详述甲甲甲",
                      "origin_kind": "agent", "status": "confirmed",
                      "source_profile": "p1"}])
         svc.persist()

@@ -490,7 +490,7 @@ class TR9LiveServiceTests(unittest.TestCase):
             # Simulate the incident path: stage PENDING + self-confirm.
             doc = {
                 "title": "顺带发现一个 API 细节：限流行为",
-                "content": "顺带发现一个 API 细节：这个接口的 rate limit "
+                "content": "顺带发现一个 API 细节：这个接口的 rate limit 甲"
                            "是每分钟 10 次，超限就 429。"
                            "甲乙丙丁戊己庚辛壬癸甲乙丙丁戊己庚辛壬癸",
                 "status": "pending",
@@ -530,14 +530,14 @@ class TR9LiveServiceTests(unittest.TestCase):
             svc.ingest([{
                 "docid": "seed-doc",
                 "title": "限流 429 经验 条目 甲乙丙丁戊己庚辛壬癸",
-                "content": "限流 429 经验 条目 甲乙丙丁戊己庚辛壬癸",
+                "content": "限流 429 经验 条目 甲乙丙丁戊己庚辛壬癸甲甲",
                 "status": "confirmed", "origin_kind": "agent",
                 "source_profile": "coder",
             }])
             # Now try to stage a very similar doc PENDING.
             dup_doc = {
                 "title": "限流 429 经验 条目 甲乙丙丁戊己庚辛壬癸",
-                "content": "限流 429 经验 条目 甲乙丙丁戊己庚辛壬癸",
+                "content": "限流 429 经验 条目 甲乙丙丁戊己庚辛壬癸甲甲",
                 "status": "pending",
                 "origin_kind": "agent",
                 "kb_class": "incident",

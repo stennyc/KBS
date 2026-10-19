@@ -98,7 +98,7 @@ class P0GovernanceTests(unittest.TestCase):
     def test_confirm_moves_staged_doc_to_searchable(self):
         svc, base, data, audit = _svc_with_audit()
         doc = {"docid": "pend-3", "title": "部署 报告 生成",
-               "content": "本次部署报告 生成于 2026 年 10 月 甲乙丙丁戊己",
+               "content": "本次部署报告 生成于 2026 年 10 月 甲乙丙丁戊己 若干字 扩充 至 长度门 之上 合格 内容 填充 段落 完整 P3FILL",
                "status": "pending", "source_profile": "coder",
                "origin_kind": "auto"}
         svc.ingest([doc])
@@ -162,11 +162,89 @@ class P0GovernanceTests(unittest.TestCase):
     def test_length_gate_rejects_short_content(self):
         svc, base, data, audit = _svc_with_audit()
         out = svc.ingest([{"docid": "short-1", "title": "太短",
-                           "content": "短",  # < 20 chars
+                           "content": "短",  # < 60 chars (triviality floor)
                            "status": "confirmed"}])
         self.assertIn("short-1", [r.get("doc_id") for r in out["rejected"]])
         self.assertEqual(out["ingested"], [])
         self.assertEqual(svc.search("太短 短", top_k=1)["data"]["total"], 0)
+
+    def test_triviality_floor_rejects_59_char_content(self):
+        # Owner 2026-10-19: the KB is a knowledge corpus (经验/手册/教程/
+        # 教材/资料), not a fragment vault — the 20-char floor let test
+        # placeholders walk in. The new floor is 60 chars of CONTENT.
+        svc, base, data, audit = _svc_with_audit()
+        out = svc.ingest([{"docid": "trivial-1", "title": "占位 测试 条目",
+                           "content": "x" * 59,
+                           "status": "confirmed"}])
+        self.assertIn("trivial-1", [r.get("doc_id") for r in out["rejected"]])
+        rejected = next(r for r in out["rejected"]
+                        if r.get("doc_id") == "trivial-1")
+        self.assertEqual(rejected["reason"], "length_gate")
+        self.assertEqual(rejected["field"], "content")
+        self.assertEqual(rejected["got"], 59)
+
+    def test_triviality_floor_accepts_60_char_content(self):
+        # Boundary: exactly 60 content chars passes the floor.
+        svc, base, data, audit = _svc_with_audit()
+        out = svc.ingest([{"docid": "floor-edge", "title": "恰好 六十字",
+                           "content": "x" * 60,
+                           "status": "confirmed"}])
+        self.assertEqual(out["ingested"], ["floor-edge"])
+        self.assertEqual(out["rejected"], [])
+
+    def test_confirm_re_runs_triviality_floor(self):
+        # The agent self-confirm path stages FIRST then confirms — without
+        # the confirm-side gate a short row could stage clean and sneak into
+        # the confirmed corpus. A < 60-char staged row must be rejected by
+        # confirm() and LEFT IN STAGING (the owner can fix + re-confirm).
+        svc, base, data, audit = _svc_with_audit()
+        out = svc.ingest([{"docid": "agent-short",
+                           "title": "agent 捕获 的 过短 经验 条目",
+                           "content": "x" * 40,
+                           "status": "pending",
+                           "origin_kind": "agent",
+                           "source_profile": "coder"}])
+        self.assertIn("agent-short", out["staged"])
+        res = svc.confirm("agent-short", source_profile="coder",
+                          confirmed_by="agent")
+        self.assertEqual(res["status"], "error")
+        self.assertEqual(res["error"], "length_gate")
+        self.assertEqual(res["field"], "content")
+        # The row is still in staging (not deleted by the failed confirm):
+        staging_rows = data / "staging" / "staging_docs.jsonl"
+        staged_ids = [json.loads(l)["docid"]
+                      for l in staging_rows.read_text().splitlines()
+                      if l.strip()]
+        self.assertIn("agent-short", staged_ids,
+                      "a confirm rejected by the length gate must leave "
+                      "the row in staging (owner can fix + re-confirm)")
+        # ...and it is NOT searchable (never entered the corpus):
+        self.assertEqual(svc.search("agent", top_k=5)["data"]["total"], 0)
+        # ...and the rejection is AUDITED:
+        gate_lines = [l for l in _audit_lines(audit)
+                      if l.get("action") == "confirm"
+                      and l.get("doc_id") == "agent-short"
+                      and l.get("error") == "length_gate"]
+        self.assertTrue(gate_lines,
+                        "the confirm-side length-gate reject must be "
+                        "audited")
+
+    def test_confirm_re_runs_triviality_floor_passes_long_content(self):
+        # Symmetry: a >= 60-char staged row confirms cleanly under the new
+        # gate (the floor must not block legitimate docs).
+        svc, base, data, audit = _svc_with_audit()
+        svc.ingest([{"docid": "agent-ok",
+                     "title": "agent 捕获 的 合格 经验 条目",
+                     "content": "x" * 80,
+                     "status": "pending",
+                     "origin_kind": "agent",
+                     "source_profile": "coder"}])
+        res = svc.confirm("agent-ok", source_profile="coder",
+                          confirmed_by="agent")
+        self.assertEqual(res["status"], "success")
+        self.assertEqual(
+            [r["doc_id"] for r in svc.search("agent", top_k=5)["data"]["results"]],
+            ["agent-ok"])
 
     def test_length_gate_rejects_long_title(self):
         svc, base, data, audit = _svc_with_audit()
@@ -182,12 +260,12 @@ class P0GovernanceTests(unittest.TestCase):
     def test_near_duplicate_blocked(self):
         svc, base, data, audit = _svc_with_audit()
         base_doc = {"docid": "orig", "title": "Kafka 消费组 重平衡",
-                    "content": "Kafka 消费组在 节点 重启 时 会 触发 重平衡 机制",
+                    "content": "Kafka 消费组在 节点 重启 时 会 触发 重平衡 机制 若干字 扩充 DUPFILL甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲",
                     "status": "confirmed"}
         svc.ingest([base_doc])
         # A near-exact rewording -> BM25 top-1 normalized score >= 0.85.
         dup = {"docid": "dup-1", "title": "Kafka 消费组 重平衡",
-               "content": "Kafka 消费组在 节点 重启 时 会 触发 重平衡 机制",
+               "content": "Kafka 消费组在 节点 重启 时 会 触发 重平衡 机制 若干字 扩充 DUPFILL甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲",
                "status": "confirmed"}
         out = svc.ingest([dup])
         blocked = [r for r in out["rejected"] if r.get("doc_id") == "dup-1"]
@@ -209,10 +287,13 @@ class P0GovernanceTests(unittest.TestCase):
         and min-max BM25 mis-killed conc-1/2. A true exact duplicate of the
         same content must STILL be blocked (the gate still has teeth)."""
         svc, base, data, audit = _svc_with_audit()
-        for i in range(3):
+        for i, extra in enumerate(
+                ("独有甲组 独有词一 独有词二",
+                 "独有乙组 独有词三 独有词四",
+                 "独有丙组 独有词五 独有词六")):
             out = svc.ingest([{
                 "docid": f"conc-{i}", "title": f"并发 文档 {i}",
-                "content": f"concurrent 并发 文档 批次 编号 {i}",
+                "content": f"concurrent 并发 文档 批次 编号 {i} 说明 若干字 扩充 长度 {extra} 独立填充词 保证字数超过六十字节门 CONCFILL甲甲甲甲甲甲甲甲甲",
                 "status": "confirmed"}])
             self.assertEqual(out["ingested"], [f"conc-{i}"],
                              f"conc-{i} must pass the near-dup gate, "
@@ -223,11 +304,13 @@ class P0GovernanceTests(unittest.TestCase):
             "all three same-template docs must be searchable")
         # A TRUE exact dup of conc-0's content must still be blocked:
         dup = svc.ingest([{
-            "docid": "conc-0-copy", "title": "并发 文档 0",
-            "content": "concurrent 并发 文档 批次 编号 0",
+            "docid": "conc-0-copy2", "title": "并发 文档 0",
+            "content": ("concurrent 并发 文档 批次 编号 0 说明 若干字 扩充 长度 "
+                       "独有甲组 独有词一 独有词二 独立填充词 保证字数超过六十字节门 "
+                       "CONCFILL甲甲甲甲甲甲甲甲甲"),
             "status": "confirmed"}])
         self.assertEqual(dup["ingested"], [])
-        rej = [r for r in dup["rejected"] if r.get("doc_id") == "conc-0-copy"]
+        rej = [r for r in dup["rejected"] if r.get("doc_id") == "conc-0-copy2"]
         self.assertTrue(rej and rej[0]["reason"] == "near_duplicate",
                         "a true exact duplicate must still be blocked")
 
@@ -245,17 +328,19 @@ class P0GovernanceTests(unittest.TestCase):
 
     def test_audit_covers_ingest_confirm_search(self):
         svc, base, data, audit = _svc_with_audit()
-        svc.ingest([{"docid": "a-1", "title": "审计 覆盖 三条链路",
-                     "content": "ingest confirm search 三条 审计 线 都要 打 甲乙丙丁",
+        # content >= trivial gate (60 bytes) + distinct from other test docs
+        # (near-dup threshold; keep it unique, >= 60B passes length gate)
+        svc.ingest([{"docid": "a-1x", "title": "审计 覆盖 三条链路 说明",
+                     "content": "ingest confirm search 三条审计线都要打甲乙丙丁各一次记录完整轨迹 AUDFILL甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲",
                      "status": "confirmed", "source_profile": "coder"}])
-        svc.confirm("a-1", source_profile="coder", confirmed_by="user-x")
+        svc.confirm("a-1x", source_profile="coder", confirmed_by="user-x")
         svc.search("审计 覆盖", top_k=1)
         actions = {l.get("action") for l in _audit_lines(audit)}
         self.assertIn("ingest_confirmed", actions)
         # a-1 was confirmed at ingest (not staged), so no 'confirm' move line —
         # confirm() on an already-confirmed (not staged) doc reports not_pending.
         self.assertIn("confirm", actions)
-        self.assertTrue(any(l.get("doc_id") == "a-1" for l in _audit_lines(audit)))
+        self.assertTrue(any(l.get("doc_id") == "a-1x" for l in _audit_lines(audit)))
 
 
 def _load_pkl_docs(path: Path) -> list:

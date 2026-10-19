@@ -80,13 +80,13 @@ class RefreshVisibilityTests(unittest.TestCase):
         data_dir = _fresh_data_dir()
         reader = KbSearchService(data_dir)
         reader.ingest([{"docid": "seed-1", "title": "种子 文档",
-                        "content": "种子 词表 初始化 填充 内容 若干",
+                        "content": "种子 词表 初始化 填充 内容 若干甲甲甲甲甲甲",
                         "status": "confirmed"}])
 
         def _child_stage():
             peer = KbSearchService(data_dir)
             peer.ingest([{"docid": "gap-pend-1", "title": "待确认 缺口 文档",
-                          "content": "这条 是 待确认 的 缺口 候选 填充 若干字",
+                          "content": "这条 是 待确认 的 缺口 候选 填充 若干字 扩充至长度门下限之上",
                           "status": "pending"}])
             peer.persist()
 
@@ -117,7 +117,7 @@ class RefreshNoWriteSideEffectTests(unittest.TestCase):
         data_dir = _fresh_data_dir()
         svc = KbSearchService(data_dir)
         svc.ingest([{"docid": "seed-1", "title": "种子 文档",
-                     "content": "种子 词表 初始化 填充 内容 若干",
+                     "content": "种子 词表 初始化 填充 内容 若干甲甲甲甲甲甲",
                      "status": "confirmed"}])
         seq_before = svc._seq
         seq_file = data_dir / "seq"
