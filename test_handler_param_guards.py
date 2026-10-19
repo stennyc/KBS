@@ -32,10 +32,14 @@ _PLUGIN_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_PLUGIN_DIR))
 
 import __init__ as kb  # noqa: E402
+from test_kb_isolation import install_isolated_service  # noqa: E402
 
 
 class NestedCoercionTests(unittest.TestCase):
     """M-1: malformed nested numeric fields must fail closed, not crash."""
+
+    def setUp(self):
+        install_isolated_service()
 
     def test_search_top_k_string_fails_closed(self):
         out = json.loads(kb._search_handler({"query": "x", "top_k": "abc"}))
@@ -75,6 +79,9 @@ class NestedCoercionTests(unittest.TestCase):
 class RequiredFieldGuardTests(unittest.TestCase):
     """m-1..m-4: schema-required fields must be enforced with a
     structured error, not a silent empty/zero-hit operation."""
+
+    def setUp(self):
+        install_isolated_service()
 
     def test_search_missing_query_rejected(self):
         out = json.loads(kb._search_handler({"top_k": 3}))

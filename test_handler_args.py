@@ -14,15 +14,15 @@ any other shape fails CLOSED with a structured
 
 import json
 import sys
-from pathlib import Path
-
 import unittest
+from pathlib import Path
 
 _PLUGIN_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_PLUGIN_DIR))
 
 from handler_args import _normalize_handler_args  # noqa: E402
 import __init__ as kb  # noqa: E402
+from test_kb_isolation import install_isolated_service  # noqa: E402
 
 
 class NormalizeHandlerArgsTests(unittest.TestCase):
@@ -68,6 +68,11 @@ class NormalizeHandlerArgsTests(unittest.TestCase):
 class HandlerStringArgsTests(unittest.TestCase):
     """Each handler must survive string/None/garbage args and return a
     structured JSON payload (never raise AttributeError)."""
+
+    def setUp(self):
+        # Isolate the plugin's cached service to a temp data dir so no test
+        # ever writes into the production /root/.hermes/kb-data.
+        install_isolated_service()
 
     def _assert_no_crash(self, handler, arg):
         result = handler(arg)

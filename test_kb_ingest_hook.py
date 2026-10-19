@@ -141,7 +141,16 @@ class TestHookBehavior:
     def test_matching_turn_stages_pending(self, tmp_path):
         ctx = FakeCtx()
         cb = hook._make_callback(ctx)
-        _fire(ctx, cb, "s1", "讨论完，最终决定采用方案 B，否决 A。")
+        # The regex front gate is the v2 agent-experience rule set: a
+        # candidate needs a TASK SUBJECT + PREMISE/CONDITION structure,
+        # not an incidental-marker word. "最终决定采用方案 B" is a bare
+        # verdict (filemem L2 territory, deliberately GONE from the v2
+        # rules — see kb_ingest_rules.py L270-274). The premise-class
+        # compound cue ("前提：...只在/当/满足") is what the v2 set
+        # captures, so feed a premise-structured turn.
+        _fire(ctx, cb, "s1",
+              "前提：只在 7-gateway 场景下才需要串行化 sweep，"
+              "否则并行会丢更新。")
         # A pending row now exists in the isolated staging store.
         svc = hook._service()
         assert svc._staging.size >= 1

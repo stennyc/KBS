@@ -83,6 +83,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Isolation (2026-10-19): this file's _plugin_module() re-execs __init__.py
+# under a fresh module name, so its handlers lazily call _svc() against the
+# production _DATA_DIR. Rebind the env + the live package's cached service to
+# a temp dir at import time so no test in this file ever writes to
+# /root/.hermes/kb-data.
+from test_kb_isolation import install_isolated_service
+install_isolated_service()
+
 from kb_service import KbSearchService, _deterministic_docid, _normalize_docs
 import kb_service
 import kb_ingest_hook
