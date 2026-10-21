@@ -99,6 +99,21 @@ class _PgConn:
             pass
 
 
+class _TokenRejected(Exception):
+    """中央 agent_registry 拒 (unknown/revoked)。S4 owner 拍 (a): 校验在
+    中央 SQL 函数层 require_agent, 客户端区分"拒"与"连不上"。"""
+    pass
+
+
+def _central_auth(conn, agent_id: str, token: str) -> None:
+    import hashlib
+    token_hash = hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+    try:
+        conn.cur().execute("SELECT require_agent(%s, %s)", (agent_id, token_hash))
+    except Exception as e:
+        raise _TokenRejected(str(e)) from e
+
+
 # ── kb doc <-> 中央 kb_docs 列 映射 (version 存 doc["version"]) ───────────
 
 def _doc_to_columndict(doc: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
@@ -153,7 +168,17 @@ def _gate_accepts(
 ) -> bool:
     """本地已有 cur_doc 时, 中央拉回的 new_doc 是否胜出。
     version 大者赢 -> 同 version 比 updated_at -> 再比 agent_id 字典序小者赢。
-    cur_doc 缺 version (本地存量未回填) 视同 0, 新行必赢 (回填后不会发生)。"""
+    cur_doc 缺 version (本地存量未回填) 视同 0, 新行必赢 (回填后不会发生)。
+    updated_at 统一 ISO 字符串再比 (datetime.isoformat, 与 filemem 侧对称;
+    str(datetime) 是 'YYYY-MM-DD HH:...' 空格格式, 与本地 ISO 'T' 分隔字典序不一致,
+    所以走 isoformat 不走 str)。"""
+    from datetime import datetime as _dt
+    def _k(v):
+        if v is None:
+            return ""
+        if isinstance(v, _dt):
+            return v.isoformat()
+        return str(v)
     if cur_doc is None:
         return True
     cur_v = int(cur_doc.get("version") or 0)
@@ -161,8 +186,8 @@ def _gate_accepts(
     if new_v > cur_v:
         return True
     if new_v == cur_v:
-        cur_ts = str(cur_doc.get("updated_at") or "")
-        new_ts = str(new_doc.get("updated_at") or "")
+        cur_ts = _k(cur_doc.get("updated_at"))
+        new_ts = _k(new_doc.get("updated_at"))
         if new_ts > cur_ts:
             return True
         if new_ts == cur_ts:
@@ -227,6 +252,10 @@ def notify_confirmed(svc, new_confirmed_docids: List[str]) -> Dict[str, Any]:
     with _local_lock:
         try:
             return _notify_locked(svc, cfg, new_confirmed_docids)
+        except _TokenRejected as e:
+            logger.warning(f"kb shared_memory: central token rejected for agent "
+                           f"{cfg.get('agent_id')}: {e}")
+            return {"status": "rejected", "reason": "token-rejected"}
         except Exception as e:
             logger.warning(f"kb shared_memory notify no-op (fail-soft): {e}")
             return {"status": "skipped", "reason": f"fail-soft: {e}"}
@@ -236,6 +265,8 @@ def _notify_locked(svc, cfg: Dict[str, Any], new_confirmed_docids: List[str]) ->
     conn = _PgConn(cfg["pg"])
     try:
         agent_id = cfg["agent_id"]
+        # S4 owner 拍 (a): 中央层 token 硬约束 (与 filemem 侧对称)
+        _central_auth(conn, agent_id, cfg.get("token", ""))
         kind = "kb"
         cur = conn.cur()
 
@@ -254,6 +285,13 @@ def _notify_locked(svc, cfg: Dict[str, Any], new_confirmed_docids: List[str]) ->
                 f"SELECT {cols} FROM kb_docs WHERE status='confirmed' "
                 "ORDER BY version_ts LIMIT 5000")
         else:
+            # psycopg2 把 since (last_pull, TIMESTAMPTZ) 读回 datetime; 若上游
+            # 传入 str 需转 datetime (与 filemem 侧对称, 防 datetime>str 崩)
+            from datetime import datetime as _dtc, timezone as _tzc
+            if isinstance(since, str):
+                since = _dtc.fromisoformat(since.replace("Z", "+00:00"))
+            if since.tzinfo is None:
+                since = since.replace(tzinfo=_tzc.utc)
             cur.execute(
                 f"SELECT {cols} FROM kb_docs WHERE status='confirmed' "
                 "AND version_ts > %s ORDER BY version_ts LIMIT 5000", (since,))
