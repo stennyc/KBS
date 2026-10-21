@@ -119,13 +119,14 @@ def _central_auth(conn, agent_id: str, token: str) -> None:
 def _doc_to_columndict(doc: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
     """kb doc -> 中央 kb_docs 列 dict。
     S5 双审 critical 修复: version_ts 不再单取 doc['updated_at'] (kb doc 从没有
-    该键 -> 恒 None -> 中央 kb_docs.version_ts 走 now() 兜底, 门控第二层
-    version_ts 比较形同虚设, 全靠 agent_id 封顶)。改为 updated_at / occurred_at /
-    version_ts 三个键任一非空即取, 全缺才 None (中央 COALESCE now() 兜底)。
+    该键 -> 恒 None -> 中央门控第二层 version_ts 比较形同虚设, 全靠 agent_id 封顶)。
+    改为 updated_at / occurred_at 两个时间戳键任一非空即取 (version_ts 键不入兜底链 —
+    kb doc 的 version_ts 是配置版本戳如 'kafka_3.6.1', 非时间戳, 塞进 TIMESTAMPTZ 会
+    cast 失败/存脏值; 全缺才 None -> 中央 COALESCE now() 兜底, 门控退回 agent_id 字典序)。
     与 filemem 侧 _row_to_rowdict 的 updated_at 语义对称。"""
     meta = {k: doc.get(k) for k in ("doc_kind", "origin_kind", "premise_status",
                                     "topic", "task_type", "premise") if doc.get(k) is not None}
-    ver_ts = doc.get("updated_at") or doc.get("occurred_at") or doc.get("version_ts")
+    ver_ts = doc.get("updated_at") or doc.get("occurred_at")
     return {
         "docid": doc.get("docid"),
         "title": doc.get("title", ""),
@@ -177,26 +178,31 @@ def _gate_accepts(
     version 大者赢 -> 同 version 比 updated_at -> 再比 agent_id 字典序小者赢。
     cur_doc 缺 version (本地存量未回填) 视同 0, 新行必赢 (回填后不会发生)。
 
-    S5 双审 critical 修复: 时间戳比较统一走 epoch (datetime.fromisoformat),
-    不再用 ISO 字符串字典序 (时区/微秒位数差异让"同一瞬时"判为不等, 与中央
-    TIMESTAMPTZ 瞬时比较 diverge = split-brain, 与 filemem 侧同修)。"""
-    from datetime import datetime as _dt
+    S5 双审 critical 修复:
+      * 时间戳比较统一走 epoch (datetime.fromisoformat), 不再用 ISO 字符串字典序
+        (时区/微秒位数差异让"同一瞬时"判为不等, 与中央 TIMESTAMPTZ 瞬时比较
+        diverge = split-brain, 与 filemem 侧同修)。
+      * 与中央 upsert_kb_doc 门控层同语义: 中央把缺失 version_ts 落库为 now()
+        (COALESCE(p_version_ts, now())), 故本地镜像对"新 doc 缺 ts"也视同
+        now() (而非 -infinity) —— 否则中央判赢的输入本地判拒 (存储层/门控层
+        漂移的本地镜像侧)。None/缺 ts -> now() epoch; 显式 ts -> 其 epoch。"""
+    from datetime import datetime as _dt, timezone as _tz
     def _epoch(v):
-        if v is None:
-            return None
+        """-> float epoch。None/无效 -> now() (中央 COALESCE(…, now()) 同语义)。"""
         try:
             if isinstance(v, _dt):
+                if v.tzinfo is None:
+                    v = v.replace(tzinfo=_tz.utc)
                 return v.timestamp()
-            s = str(v)
+            s = str(v) if v is not None else ""
             if not s:
-                return None
+                return _dt.now(_tz.utc).timestamp()
             d = _dt.fromisoformat(s.replace("Z", "+00:00"))
             if d.tzinfo is None:
-                from datetime import timezone as _tz
                 d = d.replace(tzinfo=_tz.utc)
             return d.timestamp()
         except Exception:
-            return None
+            return _dt.now(_tz.utc).timestamp()
     if cur_doc is None:
         return True
     cur_v = int(cur_doc.get("version") or 0)
@@ -204,11 +210,10 @@ def _gate_accepts(
     if new_v > cur_v:
         return True
     if new_v == cur_v:
-        NEG = float("-inf")
+        # 中央门控层对缺失 ts 落库为 now() (COALESCE(…, now())), 本地镜像同语义:
+        # _epoch 缺 ts -> now() (无 -infinity 分支; 显式 ts -> 其 epoch)。
         c = _epoch(cur_doc.get("updated_at"))
-        c = c if c is not None else NEG
         n = _epoch(new_doc.get("updated_at"))
-        n = n if n is not None else NEG
         if n > c:
             return True
         if n == c:
@@ -326,6 +331,10 @@ def _notify_locked(svc, cfg: Dict[str, Any], new_confirmed_docids: List[str]) ->
         # 3) 门控合入本地 jsonl 稳定源 (pkl 由 kb 既有 rebuild 流程重建)
         clobbered = _merge_into_local_source(Path(svc._data_dir), incoming, agent_id)
 
+        # S5 双审 critical: 中央 token 硬约束 — upsert 签名新增 p_token_hash 尾参
+        # (客户端把 sha256(config token) 传入, 中央函数体内 require_agent 强制校验).
+        import hashlib
+        token_hash = hashlib.sha256((cfg.get("token") or "").encode("utf-8")).hexdigest()
         # 4) push 本机新 confirmed doc (走中央 upsert_kb_doc, 门控在 SQL 层)
         pushed = 0
         for did in new_confirmed_docids:
@@ -336,14 +345,22 @@ def _notify_locked(svc, cfg: Dict[str, Any], new_confirmed_docids: List[str]) ->
 
             def _js(v):
                 from datetime import datetime as _dt
-                return _dt.fromisoformat(v).isoformat() if isinstance(v, str) and v and "T" in v else v
+                if isinstance(v, _dt):
+                    return v.isoformat()
+                if isinstance(v, str) and v and "T" in v:
+                    try:
+                        return _dt.fromisoformat(v.replace("Z", "+00:00")).isoformat()
+                    except Exception:
+                        return None  # 非时间戳串 (如配置版本戳) -> 中央 COALESCE now() 兜底
+                return v
             cur.execute(
-                "SELECT upsert_kb_doc(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "SELECT upsert_kb_doc(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (cd["docid"], cd["title"], cd["content"], cd["source_profile"],
                  cd["agent_id"], cd["version"], _js(cd["version_ts"]),
                  _js(cd["occurred_at"]), cd["status"], cd["doc_kind"],
                  json.dumps(cd["meta"], ensure_ascii=False,
-                            default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o))),
+                            default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)),
+                 token_hash),
             )
             pushed += 1
 
