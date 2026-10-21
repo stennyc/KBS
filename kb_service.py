@@ -532,6 +532,16 @@ class KbSearchService:
                 # lock already held here; only NEW docids are written.
                 self._reinforce.record_ingest_ts(
                     [d.get("docid") for d in confirmed], time.time())
+                # S3 (owner PRD 2026-10-21): B' 写前拉后推 — confirmed doc 直进 hot
+                # 后, pull 中央 kb_docs 增量 + 门控合入本地 jsonl 稳定源 + push 本批。
+                # config 缺段/enabled=false -> no-op, fail-soft 静默跳过。
+                try:
+                    import kb_shared_memory as _kb_sm
+                except Exception:
+                    _kb_sm = None
+                if _kb_sm is not None and confirmed:
+                    _kb_sm.notify_confirmed(
+                        self, [d.get("docid") for d in confirmed if d.get("docid")])
                 # TR-5b conflict probe: before the just-confirmed docs can
                 # silently coexist with an older confirmed entry they
                 # logically replace, probe the existing corpus for a
@@ -842,6 +852,16 @@ class KbSearchService:
                         status="confirmed")
             logger.info("confirm doc_id=%s profile=%s by=%s",
                         doc_id, stored_profile, confirmed_by)
+            # S3 (owner PRD 2026-10-21): B' 写前拉后推 — confirmed doc 进 hot 后,
+            # pull 中央 kb_docs 增量 + 门控合入本地 jsonl 稳定源 + push 本 doc。
+            # config 缺段/enabled=false -> no-op (kb 本地行为字节级不变),
+            # fail-soft: 任何 PG hiccup 静默跳过, 不阻塞 confirm 返回。
+            try:
+                import kb_shared_memory as _kb_sm
+            except Exception:
+                _kb_sm = None
+            if _kb_sm is not None:
+                _kb_sm.notify_confirmed(self, [doc_id])
             # TR-5b: same conflict-probe hook as ingest() — a confirmed
             # doc that logically replaces an older confirmed entry is
             # stamped superseded_by on that older row (fail-soft, own
