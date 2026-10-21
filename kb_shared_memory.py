@@ -117,8 +117,15 @@ def _central_auth(conn, agent_id: str, token: str) -> None:
 # ── kb doc <-> 中央 kb_docs 列 映射 (version 存 doc["version"]) ───────────
 
 def _doc_to_columndict(doc: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
+    """kb doc -> 中央 kb_docs 列 dict。
+    S5 双审 critical 修复: version_ts 不再单取 doc['updated_at'] (kb doc 从没有
+    该键 -> 恒 None -> 中央 kb_docs.version_ts 走 now() 兜底, 门控第二层
+    version_ts 比较形同虚设, 全靠 agent_id 封顶)。改为 updated_at / occurred_at /
+    version_ts 三个键任一非空即取, 全缺才 None (中央 COALESCE now() 兜底)。
+    与 filemem 侧 _row_to_rowdict 的 updated_at 语义对称。"""
     meta = {k: doc.get(k) for k in ("doc_kind", "origin_kind", "premise_status",
                                     "topic", "task_type", "premise") if doc.get(k) is not None}
+    ver_ts = doc.get("updated_at") or doc.get("occurred_at") or doc.get("version_ts")
     return {
         "docid": doc.get("docid"),
         "title": doc.get("title", ""),
@@ -126,7 +133,7 @@ def _doc_to_columndict(doc: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
         "source_profile": doc.get("source_profile"),
         "agent_id": agent_id,
         "version": int(doc.get("version") or 1),
-        "version_ts": doc.get("updated_at"),
+        "version_ts": ver_ts,
         "occurred_at": doc.get("occurred_at"),
         "status": "confirmed",
         "doc_kind": doc.get("doc_kind"),
@@ -169,16 +176,27 @@ def _gate_accepts(
     """本地已有 cur_doc 时, 中央拉回的 new_doc 是否胜出。
     version 大者赢 -> 同 version 比 updated_at -> 再比 agent_id 字典序小者赢。
     cur_doc 缺 version (本地存量未回填) 视同 0, 新行必赢 (回填后不会发生)。
-    updated_at 统一 ISO 字符串再比 (datetime.isoformat, 与 filemem 侧对称;
-    str(datetime) 是 'YYYY-MM-DD HH:...' 空格格式, 与本地 ISO 'T' 分隔字典序不一致,
-    所以走 isoformat 不走 str)。"""
+
+    S5 双审 critical 修复: 时间戳比较统一走 epoch (datetime.fromisoformat),
+    不再用 ISO 字符串字典序 (时区/微秒位数差异让"同一瞬时"判为不等, 与中央
+    TIMESTAMPTZ 瞬时比较 diverge = split-brain, 与 filemem 侧同修)。"""
     from datetime import datetime as _dt
-    def _k(v):
+    def _epoch(v):
         if v is None:
-            return ""
-        if isinstance(v, _dt):
-            return v.isoformat()
-        return str(v)
+            return None
+        try:
+            if isinstance(v, _dt):
+                return v.timestamp()
+            s = str(v)
+            if not s:
+                return None
+            d = _dt.fromisoformat(s.replace("Z", "+00:00"))
+            if d.tzinfo is None:
+                from datetime import timezone as _tz
+                d = d.replace(tzinfo=_tz.utc)
+            return d.timestamp()
+        except Exception:
+            return None
     if cur_doc is None:
         return True
     cur_v = int(cur_doc.get("version") or 0)
@@ -186,11 +204,14 @@ def _gate_accepts(
     if new_v > cur_v:
         return True
     if new_v == cur_v:
-        cur_ts = _k(cur_doc.get("updated_at"))
-        new_ts = _k(new_doc.get("updated_at"))
-        if new_ts > cur_ts:
+        NEG = float("-inf")
+        c = _epoch(cur_doc.get("updated_at"))
+        c = c if c is not None else NEG
+        n = _epoch(new_doc.get("updated_at"))
+        n = n if n is not None else NEG
+        if n > c:
             return True
-        if new_ts == cur_ts:
+        if n == c:
             return new_agent_id < str(cur_doc.get("_remote_agent_id") or "")
     return False
 
