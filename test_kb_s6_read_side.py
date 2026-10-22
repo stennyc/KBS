@@ -59,7 +59,7 @@ class TestKbSearchCentralHandler:
 
     def test_delegates_and_returns_json(self):
         sm = _fake_sm(_cfg(), result=[
-            {"id": "d1", "title": "T", "content": "C",
+            {"docid": "d1", "title": "T", "content": "C",
              "status": "confirmed", "agent_id": "remote",
              "updated_at": None, "source_profile": "remote"}])
         out = json.loads(_kb_search_central_handler(

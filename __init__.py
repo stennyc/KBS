@@ -912,7 +912,7 @@ def _kb_search_central_handler(args: dict, **kwargs) -> str:
     out_rows = []
     for r in rows:
         out_rows.append({
-            "id": r.get("id"),
+            "id": r.get("docid"),
             "title": r.get("title"),
             "content": r.get("content"),
             "status": r.get("status"),
