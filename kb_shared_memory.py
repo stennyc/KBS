@@ -39,6 +39,13 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# 门 2 共识面 doc_kind 白名单 (owner 定稿 2026-10-22, 对齐 filemem 门 2 语义):
+# 只有"通用共享知识"三类进共识召回 (confirmed_only=true / 自动注入面查得到).
+# manual / experience 是"本机语境强"门类, 只进门 1 全量沉淀池 (推上中央存档),
+# 不进共识召回 — 仅模型显式 confirmed_only=false 翻全量时查得到 (只推不自动注入,
+# 可读可参考, 跟 filemem 方式一致).
+CONSENSUS_DOC_KINDS: tuple = ("reference", "material", "tutorial")
+
 
 def _load_shared_memory_config() -> Optional[Dict[str, Any]]:
     """读 plugins.entries.knowledge-base-search.shared_memory 段。
@@ -250,6 +257,13 @@ def search_central(cfg: Dict[str, Any], query: str,
         params: List[Any] = [f"%{query}%", f"%{query}%", f"%{query}%"]
         if confirmed_only:
             sql += " AND status = 'confirmed'"
+            # 门 2 共识面 (owner 定稿 2026-10-22): 只放行 CONSENSUS_DOC_KINDS 三类
+            # (reference/material/tutorial 通用共享知识). manual/experience 本机语境强,
+            # 不进共识召回 — 只在全量面 (confirmed_only=False) 查得到.
+            # doc_kind 为 NULL (agent 自动捕获未打标) 不进共识面 (宁缺不误灌).
+            _placeholders = ", ".join(["%s"] * len(CONSENSUS_DOC_KINDS))
+            sql += f" AND doc_kind IN ({_placeholders})"
+            params.extend(CONSENSUS_DOC_KINDS)
         sql += " ORDER BY version_ts DESC NULLS LAST LIMIT %s"
         params.append(limit)
         cur.execute(sql, params)

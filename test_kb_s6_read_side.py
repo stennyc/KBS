@@ -90,3 +90,80 @@ class TestKbReferralHint:
         assert kb_referral_hint(5, enabled=True) == ""
         assert kb_referral_hint(1, enabled=True) != ""
         assert "kb_search_central" in kb_referral_hint(1, enabled=True)
+
+
+class TestSearchCentralDocKindFilter:
+    """门 2 共识面 (owner 定稿 2026-10-22): confirmed_only=true 只放行
+    CONSENSUS_DOC_KINDS (reference/material/tutorial), manual/experience 挡在外.
+    confirmed_only=false (全量面) 不过滤 — manual/experience 仍可查 (模型主动翻).
+    拦在 _PgConn + _central_auth 层注入 fake cur, 验证 SQL 过滤条件."""
+    def _run(self, confirmed_only, cur):
+        import kb_shared_memory as sm
+
+        class _FakeConn:
+            def __init__(self, pg):
+                pass
+            def cur(self):
+                return cur
+            def commit(self):
+                pass
+            def close(self):
+                pass
+        with mock.patch.object(sm, "_PgConn", _FakeConn), \
+             mock.patch.object(sm, "_central_auth", lambda *a, **k: None):
+            return sm.search_central(_cfg(), "postgres",
+                                     confirmed_only=confirmed_only)
+
+    def test_confirmed_only_filters_doc_kind_in_sql(self):
+        sqls = []
+
+        class _Cur:
+            def __init__(self):
+                self.sqls = []
+                self.params_list = []
+            def execute(self, sql, params):
+                # _central_auth 已 mock (不调 cur.execute) -> 每次 execute 都是 search SQL
+                self.sqls.append(sql)
+                self.params_list.append(params)
+            def fetchone(self):
+                return ("local",)
+            def fetchall(self):
+                return []
+
+        c = _Cur()
+        out = self._run(True, c)
+        assert out == []
+        assert len(c.sqls) == 1
+        s = c.sqls[0]
+        # 共识面: status='confirmed' + doc_kind IN 白名单
+        assert "status = 'confirmed'" in s
+        assert "doc_kind IN" in s
+        # 参数里带 3 个门类白名单值
+        p = c.params_list[0]
+        assert "reference" in p and "material" in p and "tutorial" in p
+
+    def test_full_sediment_no_doc_kind_filter(self):
+        class _Cur:
+            def __init__(self):
+                self.sql = ""
+                self.params_list = []
+            def execute(self, sql, params):
+                self.sql = sql
+                self.params_list.append(params)
+            def fetchone(self):
+                return ("local",)
+            def fetchall(self):
+                return [("d1", "t", "c", "remote", "remote", 1, None, None,
+                         "confirmed", "manual", {})]
+        c = _Cur()
+        out = self._run(False, c)
+        s = c.sql
+        assert "status = 'confirmed'" not in s
+        assert "doc_kind IN" not in s
+        # 全量面: manual 查得到 (模型主动翻全量沉淀池)
+        assert out[0]["doc_kind"] == "manual"
+
+
+def test_consensus_doc_kinds_constant():
+    import kb_shared_memory as sm
+    assert sm.CONSENSUS_DOC_KINDS == ("reference", "material", "tutorial")
