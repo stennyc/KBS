@@ -918,7 +918,11 @@ def _kb_search_central_handler(args: dict, **kwargs) -> str:
             "status": r.get("status"),
             "source_profile": r.get("source_profile"),
             "agent_id": r.get("agent_id"),
-            "updated_at": r.get("updated_at"),
+            "version": r.get("version"),
+            "version_ts": r.get("version_ts"),
+            "occurred_at": r.get("occurred_at"),
+            "doc_kind": r.get("doc_kind"),
+            "meta": r.get("meta"),
         })
     return json.dumps({"success": True, "query": query,
                        "confirmed_only": confirmed_only,

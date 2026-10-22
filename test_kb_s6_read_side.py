@@ -61,12 +61,17 @@ class TestKbSearchCentralHandler:
         sm = _fake_sm(_cfg(), result=[
             {"docid": "d1", "title": "T", "content": "C",
              "status": "confirmed", "agent_id": "remote",
-             "updated_at": None, "source_profile": "remote"}])
+             "version_ts": "2026-10-22T00:00:00Z", "doc_kind": "tutorial"}])
         out = json.loads(_kb_search_central_handler(
             {"query": "postgres", "confirmed_only": True}, sm_module=sm))
         assert out["success"] is True
         assert out["results"][0]["agent_id"] == "remote"
         assert out["count"] == 1
+        # C1 修复: handler 映射 search_central 真实键 (version_ts/doc_kind/occurred_at),
+        # 不再取不存在的 updated_at 键
+        assert out["results"][0]["version_ts"] == "2026-10-22T00:00:00Z"
+        assert out["results"][0]["doc_kind"] == "tutorial"
+        assert "updated_at" not in out["results"][0]
 
     def test_empty_query_errors(self):
         sm = _fake_sm(_cfg())
