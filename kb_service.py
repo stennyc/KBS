@@ -532,9 +532,9 @@ class KbSearchService:
                 # lock already held here; only NEW docids are written.
                 self._reinforce.record_ingest_ts(
                     [d.get("docid") for d in confirmed], time.time())
-                # S3 (owner PRD 2026-10-21): B' 写前拉后推 — confirmed doc 直进 hot
-                # 后, pull 中央 kb_docs 增量 + 门控合入本地 jsonl 稳定源 + push 本批。
-                # config 缺段/enabled=false -> no-op, fail-soft 静默跳过。
+                # S3-v3 (owner 定稿 2026-10-22, 三扇门): 只推不拉 — confirmed doc
+                # 落盘后推上中央 kb_docs (门 1 沉淀 + 门 2 共识查询), 中央行不回写
+                # 本地 jsonl / 不重建 pkl / 不自动注入. config 缺段/enabled=false -> no-op.
                 try:
                     import kb_shared_memory as _kb_sm
                 except Exception:
@@ -852,8 +852,8 @@ class KbSearchService:
                         status="confirmed")
             logger.info("confirm doc_id=%s profile=%s by=%s",
                         doc_id, stored_profile, confirmed_by)
-            # S3 (owner PRD 2026-10-21): B' 写前拉后推 — confirmed doc 进 hot 后,
-            # pull 中央 kb_docs 增量 + 门控合入本地 jsonl 稳定源 + push 本 doc。
+            # S3-v3 (owner 定稿 2026-10-22, 三扇门): 只推不拉 — confirmed doc 进 hot 后,
+            # 推上中央 kb_docs, 不回写本地 jsonl / 不重建 pkl / 不自动注入。
             # config 缺段/enabled=false -> no-op (kb 本地行为字节级不变),
             # fail-soft: 任何 PG hiccup 静默跳过, 不阻塞 confirm 返回。
             try:

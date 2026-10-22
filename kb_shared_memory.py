@@ -1,34 +1,40 @@
-"""S3: kb 侧内联共享同步 (owner 定稿 2026-10-21, PRD /root/.hermes/docs/shared-memory-prd.md)
+"""kb 侧内联共享同步 — 只推不拉版 (owner 定稿 2026-10-22 三扇门重构, 与
+filemem shared_memory.py 对称, X 方案两仓各一份).
 
-kb 与 filemem 对称的内联 B' 同步 (X 方案, 两仓各一份, 门控逻辑同语义)。
-中央库 = 同一台 Postgres 的 kb_docs 表 (version 门控, 与 filemem memories 表同构)。
+kb 与 filemem 对称的只推不拉同步. 中央库 = 同一台 Postgres 的 kb_docs 表
+(全量沉淀, append 语义, 不做跨设备门控覆盖).
 
-设计 (与 filemem shared_memory.py 对称):
+设计 (与 filemem shared_memory.py 对称, 只推不拉):
 - 配置: config.yaml plugins.entries.knowledge-base-search.shared_memory
   (同构段; 缺段 / enabled=false -> 整模块 no-op, kb 本地行为字节级不变)
-- 门控: kb doc 加 version (本地单调, 与 filemem shared_version 同一套语义)
-  大者赢 -> 同 version 比 version_ts -> 再比 agent_id 字典序小者赢;
-  被覆盖旧版进 memory_history (中央 SQL 层 upsert_kb_doc 已记)。
-- 检索 = B' 写前拉后推: 只在"confirmed doc 进 hot"时刻 (ingest confirmed
-  分支 + confirm() staging->hot 移) pull 中央 kb_docs 增量 -> 门控合入本地
-  稳定 jsonl 源 (knowledge-base-ingest.jsonl, 不是 pkl) -> 本地重建 pkl
-  (two-layer invariant: pkl 是派生物, 不入中央, 各机本地重建)。
-- fail-soft: PG 不可达 / config 缺失 / psycopg2 缺失 -> 静默跳过, 绝不
-  阻塞 kb 本地写路径。
+- 只推不拉: 本机 kb 数据源 (唯一权威) 只往外推, 中央 kb_docs 绝不回写
+  本地稳定 jsonl 源 (knowledge-base-ingest.jsonl 只被本机写). 中央行视为
+  "别人的参考", 只读可查, 不自动注入, 不回写本地.
+- 门控简化: 单向后每 doc 只有原 device 能写, 无跨设备冲突. 中央 upsert =
+  原设备幂等覆盖 + 非原设备拒写 (token 鉴权 + device 归属).
+- 版本存 doc["version"]: 仅防"原设备自己"重放/乱序 (单调), 不做跨设备
+  tie-break (那套已随双向语义删除).
+- pkl 是派生物, 不入中央, 各机本地重建 (two-layer invariant 不变).
+
+砍掉 (相对 S3-S5 双向版):
+- pull 增量腿 (last_pull 水位 / 全量首拉 / 增量拉) — 不拉了
+- _columndict_to_doc / _merge_into_local_source / _gate_accepts — 中央行不进
+  本地 jsonl 源, 无跨设备门控 (单向无冲突), 无本地镜像门控
+保留:
+- 推腿: 本机 doc -> 中央 kb_docs (幂等, 带 device 归属 + token 鉴权)
+- 检索面: 查中央 kb_docs (只读 SQL), 结果不落本地 / 不重建 pkl
 
 挂点 (kb_service.py 内联, 不是新插件):
-- ingest() confirmed 分支: self._backend.update(confirmed) 之后
-- confirm() 成功分支: moved 移进 hot 之后
+- ingest() confirmed 分支: 本机 doc 落盘后
+- confirm() 成功分支: moved 进 hot 后
 两处各调 kb_shared_memory.notify_confirmed(doc_ids, svc) ——
-notify_confirmed 内部做 pull-merge-push + 本地 jsonl 源回写 + pkl 重建。
+notify_confirmed 内部只做推腿 (无 pull-merge, 无 pkl 重建)。
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -114,16 +120,12 @@ def _central_auth(conn, agent_id: str, token: str) -> None:
         raise _TokenRejected(str(e)) from e
 
 
-# ── kb doc <-> 中央 kb_docs 列 映射 (version 存 doc["version"]) ───────────
+# ── kb doc -> 中央 kb_docs 列 映射 (version 存 doc["version"], 仅防重放) ───
 
 def _doc_to_columndict(doc: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
     """kb doc -> 中央 kb_docs 列 dict。
-    S5 双审 critical 修复: version_ts 不再单取 doc['updated_at'] (kb doc 从没有
-    该键 -> 恒 None -> 中央门控第二层 version_ts 比较形同虚设, 全靠 agent_id 封顶)。
-    改为 updated_at / occurred_at 两个时间戳键任一非空即取 (version_ts 键不入兜底链 —
-    kb doc 的 version_ts 是配置版本戳如 'kafka_3.6.1', 非时间戳, 塞进 TIMESTAMPTZ 会
-    cast 失败/存脏值; 全缺才 None -> 中央 COALESCE now() 兜底, 门控退回 agent_id 字典序)。
-    与 filemem 侧 _row_to_rowdict 的 updated_at 语义对称。"""
+    version_ts = updated_at / occurred_at 任一非空即取 (全缺才 None -> 中央
+    COALESCE now() 兜底)。version 仅防原设备重放, 不做跨设备门控。"""
     meta = {k: doc.get(k) for k in ("doc_kind", "origin_kind", "premise_status",
                                     "topic", "task_type", "premise") if doc.get(k) is not None}
     ver_ts = doc.get("updated_at") or doc.get("occurred_at")
@@ -136,148 +138,30 @@ def _doc_to_columndict(doc: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
         "version": int(doc.get("version") or 1),
         "version_ts": ver_ts,
         "occurred_at": doc.get("occurred_at"),
-        "status": "confirmed",
+        "status": doc.get("status") or "confirmed",
         "doc_kind": doc.get("doc_kind"),
         "meta": meta,
     }
 
 
-def _columndict_to_doc(d: Dict[str, Any]) -> Dict[str, Any]:
-    """中央 kb_docs 行 -> 本地稳定 jsonl 源 doc (datetime -> ISO 字符串,
-    与 filemem 侧 _rowdict_to_local 同款处理; pkl 重建读的是 jsonl 源)。"""
-    from datetime import datetime as _dt
-
-    def _ts(v):
-        return v.isoformat() if isinstance(v, _dt) else v
-
-    meta = d.get("meta") or {}
-    if not isinstance(meta, dict):
-        meta = {}
-    doc = {
-        "docid": d.get("docid"),
-        "title": d.get("title"),
-        "content": d.get("content", ""),
-        "source_profile": d.get("source_profile"),
-        "version": int(d.get("version") or 1),
-        "status": "confirmed",
-        "updated_at": _ts(d.get("version_ts")),
-        "occurred_at": _ts(d.get("occurred_at")),
-        "doc_kind": d.get("doc_kind"),
-    }
-    doc.update({k: _ts(v) for k, v in meta.items()})
-    return doc
-
-
-# ── 本地门控 (与中央 upsert_kb_doc PL/pgSQL 同语义, 两仓各一份) ──────────
-
-def _gate_accepts(
-    cur_doc: Optional[Dict[str, Any]],
-    new_doc: Dict[str, Any], new_agent_id: str,
-) -> bool:
-    """本地已有 cur_doc 时, 中央拉回的 new_doc 是否胜出。
-    version 大者赢 -> 同 version 比 updated_at -> 再比 agent_id 字典序小者赢。
-    cur_doc 缺 version (本地存量未回填) 视同 0, 新行必赢 (回填后不会发生)。
-
-    S5 双审 critical 修复:
-      * 时间戳比较统一走 epoch (datetime.fromisoformat), 不再用 ISO 字符串字典序
-        (时区/微秒位数差异让"同一瞬时"判为不等, 与中央 TIMESTAMPTZ 瞬时比较
-        diverge = split-brain, 与 filemem 侧同修)。
-      * 与中央 upsert_kb_doc 门控层同语义: 中央把缺失 version_ts 落库为 now()
-        (COALESCE(p_version_ts, now())), 故本地镜像对"新 doc 缺 ts"也视同
-        now() (而非 -infinity) —— 否则中央判赢的输入本地判拒 (存储层/门控层
-        漂移的本地镜像侧)。None/缺 ts -> now() epoch; 显式 ts -> 其 epoch。"""
-    from datetime import datetime as _dt, timezone as _tz
-    def _epoch(v):
-        """-> float epoch。None/无效 -> now() (中央 COALESCE(…, now()) 同语义)。"""
-        try:
-            if isinstance(v, _dt):
-                if v.tzinfo is None:
-                    v = v.replace(tzinfo=_tz.utc)
-                return v.timestamp()
-            s = str(v) if v is not None else ""
-            if not s:
-                return _dt.now(_tz.utc).timestamp()
-            d = _dt.fromisoformat(s.replace("Z", "+00:00"))
-            if d.tzinfo is None:
-                d = d.replace(tzinfo=_tz.utc)
-            return d.timestamp()
-        except Exception:
-            return _dt.now(_tz.utc).timestamp()
-    if cur_doc is None:
-        return True
-    cur_v = int(cur_doc.get("version") or 0)
-    new_v = int(new_doc.get("version") or 1)
-    if new_v > cur_v:
-        return True
-    if new_v == cur_v:
-        # 中央门控层对缺失 ts 落库为 now() (COALESCE(…, now())), 本地镜像同语义:
-        # _epoch 缺 ts -> now() (无 -infinity 分支; 显式 ts -> 其 epoch)。
-        c = _epoch(cur_doc.get("updated_at"))
-        n = _epoch(new_doc.get("updated_at"))
-        if n > c:
-            return True
-        if n == c:
-            return new_agent_id < str(cur_doc.get("_remote_agent_id") or "")
-    return False
-
-
-# ── 本地稳定 jsonl 源回写 (拉回的增量 -> knowledge-base-ingest.jsonl) ─────
-
-_KB_INGEST_JSONL = "knowledge-base-ingest.jsonl"
-
-
-def _merge_into_local_source(kb_data_dir: Path, incoming: List[Dict[str, Any]],
-                             agent_id: str) -> int:
-    """把中央拉回的 kb_docs 增量按门控合入本地稳定 jsonl 源。
-    返回本地真被覆盖的 doc 数。jsonl 每行 = 一个 confirmed doc。"""
-    if not incoming:
-        return 0
-    src = kb_data_dir / _KB_INGEST_JSONL
-    local: Dict[str, Dict[str, Any]] = {}
-    if src.exists():
-        with open(src, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    d = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                local[str(d.get("docid"))] = d
-    clobbered = 0
-    for d in incoming:
-        doc = _columndict_to_doc(d)
-        doc["_remote_agent_id"] = d.get("agent_id")
-        cur = local.get(str(doc.get("docid")))
-        if _gate_accepts(cur, doc, agent_id):
-            doc.pop("_remote_agent_id", None)
-            local[str(doc["docid"])] = doc
-            clobbered += 1
-    if clobbered:
-        tmp = src.with_suffix(".jsonl.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            for doc in local.values():
-                f.write(json.dumps(doc, ensure_ascii=False) + "\n")
-        os.replace(tmp, src)
-    return clobbered
-
-
-# ── 主入口: confirmed doc 进 hot 后调用 (写前拉后推) ──────────────────────
+# ── 主入口: doc 落盘后调用 (只推, 不拉) ─────────────────────────────────
 
 _local_lock = threading.Lock()
 
 
-def notify_confirmed(svc, new_confirmed_docids: List[str]) -> Dict[str, Any]:
+def notify_confirmed(svc, new_docids: List[str]) -> Dict[str, Any]:
     """svc = KbSearchService 实例 (用其 _data_dir)。
-    new_confirmed_docids = 本次刚进 confirmed corpus 的 docid。
-    返回 {"status": "skipped"|"ok", "pulled": n, "pushed": n, "clobbered_local": n}"""
+    new_docids = 本次落盘的 docid (confirmed+unconfirmed 都推门 1 沉淀池;
+    空 -> no-op)。只推不拉: 无 pull / 无本地 jsonl 回写 / 无 pkl 重建。
+    返回 {"status": "ok"|"skipped"|"rejected", "pushed": n}"""
     cfg = _load_shared_memory_config()
     if cfg is None:
         return {"status": "skipped", "reason": "config-absent-or-disabled"}
+    if not new_docids:
+        return {"status": "skipped", "reason": "no-ids", "pushed": 0}
     with _local_lock:
         try:
-            return _notify_locked(svc, cfg, new_confirmed_docids)
+            return _push_locked(svc, cfg, new_docids)
         except _TokenRejected as e:
             logger.warning(f"kb shared_memory: central token rejected for agent "
                            f"{cfg.get('agent_id')}: {e}")
@@ -287,57 +171,18 @@ def notify_confirmed(svc, new_confirmed_docids: List[str]) -> Dict[str, Any]:
             return {"status": "skipped", "reason": f"fail-soft: {e}"}
 
 
-def _notify_locked(svc, cfg: Dict[str, Any], new_confirmed_docids: List[str]) -> Dict[str, Any]:
+def _push_locked(svc, cfg: Dict[str, Any], new_docids: List[str]) -> Dict[str, Any]:
     conn = _PgConn(cfg["pg"])
     try:
         agent_id = cfg["agent_id"]
-        # S4 owner 拍 (a): 中央层 token 硬约束 (与 filemem 侧对称)
         _central_auth(conn, agent_id, cfg.get("token", ""))
-        kind = "kb"
         cur = conn.cur()
-
-        # 1) 水位线
-        cur.execute(
-            "SELECT last_pull FROM agent_watermarks WHERE agent_id=%s AND kind=%s",
-            (agent_id, kind))
-        row = cur.fetchone()
-        since = row[0] if row else None
-
-        # 2) pull 增量 kb_docs
-        cols = ("docid, title, content, source_profile, agent_id, version, "
-                "version_ts, occurred_at, status, doc_kind, meta")
-        if since is None:
-            cur.execute(
-                f"SELECT {cols} FROM kb_docs WHERE status='confirmed' "
-                "ORDER BY version_ts LIMIT 5000")
-        else:
-            # psycopg2 把 since (last_pull, TIMESTAMPTZ) 读回 datetime; 若上游
-            # 传入 str 需转 datetime (与 filemem 侧对称, 防 datetime>str 崩)
-            from datetime import datetime as _dtc, timezone as _tzc
-            if isinstance(since, str):
-                since = _dtc.fromisoformat(since.replace("Z", "+00:00"))
-            if since.tzinfo is None:
-                since = since.replace(tzinfo=_tzc.utc)
-            cur.execute(
-                f"SELECT {cols} FROM kb_docs WHERE status='confirmed' "
-                "AND version_ts > %s ORDER BY version_ts LIMIT 5000", (since,))
-        raw = cur.fetchall()
-        incoming = [
-            dict(zip(["docid", "title", "content", "source_profile", "agent_id",
-                      "version", "version_ts", "occurred_at", "status", "doc_kind",
-                      "meta"], r)) for r in raw
-        ]
-
-        # 3) 门控合入本地 jsonl 稳定源 (pkl 由 kb 既有 rebuild 流程重建)
-        clobbered = _merge_into_local_source(Path(svc._data_dir), incoming, agent_id)
-
-        # S5 双审 critical: 中央 token 硬约束 — upsert 签名新增 p_token_hash 尾参
-        # (客户端把 sha256(config token) 传入, 中央函数体内 require_agent 强制校验).
         import hashlib
         token_hash = hashlib.sha256((cfg.get("token") or "").encode("utf-8")).hexdigest()
-        # 4) push 本机新 confirmed doc (走中央 upsert_kb_doc, 门控在 SQL 层)
+        # 只推: 本机落盘 doc -> 中央 kb_docs (全量, 幂等 upsert)。
+        # 无 pull 腿 / 无水位 / 无本地 jsonl 回写 / 无 pkl 重建。
         pushed = 0
-        for did in new_confirmed_docids:
+        for did in new_docids:
             doc = _read_local_doc(svc, did)
             if doc is None:
                 continue
@@ -351,7 +196,7 @@ def _notify_locked(svc, cfg: Dict[str, Any], new_confirmed_docids: List[str]) ->
                     try:
                         return _dt.fromisoformat(v.replace("Z", "+00:00")).isoformat()
                     except Exception:
-                        return None  # 非时间戳串 (如配置版本戳) -> 中央 COALESCE now() 兜底
+                        return None  # 非时间戳串 -> 中央 COALESCE now() 兜底
                 return v
             cur.execute(
                 "SELECT upsert_kb_doc(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
@@ -363,22 +208,8 @@ def _notify_locked(svc, cfg: Dict[str, Any], new_confirmed_docids: List[str]) ->
                  token_hash),
             )
             pushed += 1
-
-        # 5) 推水位线
-        if incoming:
-            last_ts = max((d["version_ts"] for d in incoming if d.get("version_ts")),
-                          default=None)
-            if last_ts:
-                cur.execute(
-                    "INSERT INTO agent_watermarks (agent_id, kind, last_pull, last_push, last_version_seen) "
-                    "VALUES (%s, %s, %s, now(), (SELECT max(version) FROM kb_docs)) "
-                    "ON CONFLICT (agent_id, kind) DO UPDATE SET "
-                    "last_pull = EXCLUDED.last_pull, last_push = now(), "
-                    "last_version_seen = GREATEST(agent_watermarks.last_version_seen, EXCLUDED.last_version_seen)",
-                    (agent_id, kind, last_ts))
         conn.commit()
-        return {"status": "ok", "pulled": len(incoming), "pushed": pushed,
-                "clobbered_local": clobbered}
+        return {"status": "ok", "pushed": pushed}
     finally:
         conn.close()
 
@@ -396,6 +227,42 @@ def _read_local_doc(svc, did: str) -> Optional[Dict[str, Any]]:
 
 def bump_version(doc: Dict[str, Any]) -> int:
     """confirmed doc 变更 (ingest/confirm/supersede 后重进 hot) 时: 单调 +1。
-    新 doc = 1 (存量回填后起步 1), 变更 = 旧 + 1。与 filemem 侧同语义。"""
+    新 doc = 1, 变更 = 旧 + 1。仅防原设备重放, 不做跨设备门控。"""
     old = int(doc.get("version") or 0)
     return old + 1
+
+
+# ── 检索面: 查中央 (只读, 结果不落本地 / 不重建 pkl) ───────────────────
+
+def search_central(cfg: Dict[str, Any], query: str,
+                   confirmed_only: bool = True, limit: int = 50) -> List[Dict[str, Any]]:
+    """查中央 kb_docs (别人的参考知识)。只读, 返回 doc dict 列表, 不写本地。
+    confirmed_only=True -> 查共识 (status='confirmed'); False -> 查全量沉淀。
+    结果由调用方决定用不用, 绝不自动进本地 corpus / 重建 pkl。"""
+    conn = _PgConn(cfg["pg"])
+    try:
+        agent_id = cfg["agent_id"]
+        _central_auth(conn, agent_id, cfg.get("token", ""))
+        cur = conn.cur()
+        cols = ("SELECT docid, title, content, source_profile, agent_id, version, "
+                "version_ts, occurred_at, status, doc_kind, meta FROM kb_docs")
+        sql = cols + " WHERE (title ILIKE %s OR content ILIKE %s OR meta::text ILIKE %s)"
+        params: List[Any] = [f"%{query}%", f"%{query}%", f"%{query}%"]
+        if confirmed_only:
+            sql += " AND status = 'confirmed'"
+        sql += " ORDER BY version_ts DESC NULLS LAST LIMIT %s"
+        params.append(limit)
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+        return [
+            dict(zip(["docid", "title", "content", "source_profile", "agent_id",
+                      "version", "version_ts", "occurred_at", "status", "doc_kind",
+                      "meta"], r)) for r in rows
+        ]
+    except _TokenRejected:
+        return []
+    except Exception as e:
+        logger.warning(f"kb shared_memory search_central no-op (fail-soft): {e}")
+        return []
+    finally:
+        conn.close()

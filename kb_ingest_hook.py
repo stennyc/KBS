@@ -1325,6 +1325,21 @@ _READ_MAX_HITS = 3
 _READ_MAX_CONTEXT_CHARS = 1500
 _READ_SNIPPET_CHARS = 500
 
+# S6 读侧 (owner 定稿 2026-10-22, D1=b / D2=只进本轮不落本地): 本地知识库
+# auto-retrieve 召回 < 2 时, 在注入块尾追加一行【提示】(只指路, 绝不灌中央数据),
+# 由模型/人工再调 kb_search_central 主动查中央. 结果只活本轮工具返回, 不落本地.
+
+
+def kb_referral_hint(n: int, enabled: bool = True) -> str:
+    """kb auto-retrieve 面的跨设备参考提示行 (对称 filemem _shared_referral_hint).
+    enabled=False (shared_memory 未配置) 或 n >= 2 -> 返回 "" (字节级不变)."""
+    if not enabled or n >= 2:
+        return ""
+    return (
+        f"\n[提示] 本地知识库相关条目仅 {n} 条; 需参考其他设备的共享知识库, "
+        "可调用 kb_search_central (门2共识 / confirmed_only=false 查全量)。"
+    )
+
 # TR-2 agent-partition constants (KPI-4): the 6:4 split of the unchanged
 # 1500-char total, and the decay gate's 14-day fresh-window threshold.
 _AGENT_BUDGET_RATIO = 0.4  # agent segment <= 40% of the total budget
@@ -1758,7 +1773,18 @@ def _make_read_callback(ctx):
         # items are unconstrained and never pass through the gate).
         user_hits = [h for h in user_hits if not _is_agent_result(h)
                      or _agent_in_decay_gate(h, now_ts)]
+        _sm_enabled = False
+        try:
+            import kb_shared_memory as _kb_sm
+            _sm_enabled = _kb_sm._load_shared_memory_config() is not None
+        except Exception:
+            _sm_enabled = False
         if not user_hits and not agent_hits and not footnote:
+            # 0 local kb hit (S6 D1=b): 仍提示可查中央知识库 (共享=可参考),
+            # 提示只进本轮注入块, 不自动灌中央数据. 未启用 shared_memory -> 不提示.
+            _hint = kb_referral_hint(0, enabled=_sm_enabled)
+            if _hint:
+                return {"context": _hint}
             return {}  # no result in either segment -> direct pass
         block, n_user, n_agent = _build_segmented_block(
             user_hits, agent_hits)
@@ -1768,6 +1794,19 @@ def _make_read_callback(ctx):
             block = (block + "\n\n" + footnote) if block else footnote
         if not block:
             return {}
+        # S6 读侧 (owner D1=b): 本地知识库 auto-retrieve 总命中 < 2 且
+        # shared_memory 已启用 -> 注入块尾追加一行提示 (只指路, 不灌中央数据).
+        # 未启用 shared_memory 的机器上 enabled=False -> 恒 "" (字节级不变).
+        _total_hits = len(user_hits) + len(agent_hits)
+        _sm_enabled = False
+        try:
+            import kb_shared_memory as _kb_sm
+            _sm_enabled = _kb_sm._load_shared_memory_config() is not None
+        except Exception:
+            _sm_enabled = False
+        _hint = kb_referral_hint(_total_hits, enabled=_sm_enabled)
+        if _hint:
+            block = block + _hint
         # Structured log line: the KPI-4 verification reads the agent-
         # segment hit/char counts out of this line (n_agent_hit /
         # agent_chars fields), alongside the pre-TR-2 total-hit +

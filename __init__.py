@@ -846,6 +846,86 @@ def _get_handler(args: dict, **kwargs) -> str:
     return json.dumps(out, ensure_ascii=False)
 
 
+# ── S6 read-side: kb_search_central (read-only central kb_docs query) ──────
+KB_SEARCH_CENTRAL_SCHEMA = {
+    "name": "kb_search_central",
+    "description": (
+        "S6 读侧 (owner 定稿 2026-10-22, 三扇门门2共识): 查【中央】kb_docs "
+        "(其他设备已确认的知识库文档) — 别人的参考知识. 纯只读 SQL: 不写本地 "
+        "jsonl / 不重建 pkl / 不自动注入 / 不回写本地. 结果只活在本轮工具返回, "
+        "下一轮即失效. 本地知识库召回 < 2 条、或需参考其他设备共享知识时调用; "
+        "confirmed_only=true 只回 confirmed 共识, false 回全量沉淀."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "关键词 (ILIKE 匹配 title/content/source_profile).",
+            },
+            "confirmed_only": {
+                "type": "boolean",
+                "description": "true=门2共识面(只 confirmed), false=门1全量. 默认 true.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "最多返回条数, 默认 50.",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+
+def _kb_search_central_handler(args: dict, **kwargs) -> str:
+    """S6 读侧 handler: 只读查中央 kb_docs, 不碰本地数据源.
+    中央 = 别人的参考记忆: 结果只进本轮工具返回, 绝不落本地 / 不进 auto-inject.
+    config 缺段 / enabled=false -> 干净错误 (不炸). search_central 内 PG hiccup
+    -> 空结果 (fail-soft). `sm_module` kwarg 供测试注入 kb_shared_memory 替身."""
+    args = _normalize_handler_args(args)
+    if args.get("status") == "error":
+        return json.dumps(args, ensure_ascii=False)
+    sm_module = kwargs.get("sm_module")
+    if sm_module is None:
+        import kb_shared_memory as sm_module
+    cfg = sm_module._load_shared_memory_config()
+    if cfg is None:
+        return json.dumps(
+            {"success": False,
+             "error": "shared_memory 未启用 (config 缺 knowledge-base-search.shared_memory 段或 enabled=false)"},
+            ensure_ascii=False)
+    query = str(args.get("query", "")).strip()
+    if not query:
+        return json.dumps({"success": False, "error": "query 不能为空"},
+                          ensure_ascii=False)
+    confirmed_only = bool(args.get("confirmed_only", True))
+    try:
+        limit = int(args.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        rows = sm_module.search_central(cfg, query, confirmed_only=confirmed_only,
+                                        limit=limit)
+    except Exception as e:
+        return json.dumps({"success": False, "error": f"kb_search_central 查询失败: {e}"},
+                          ensure_ascii=False)
+    out_rows = []
+    for r in rows:
+        out_rows.append({
+            "id": r.get("id"),
+            "title": r.get("title"),
+            "content": r.get("content"),
+            "status": r.get("status"),
+            "source_profile": r.get("source_profile"),
+            "agent_id": r.get("agent_id"),
+            "updated_at": r.get("updated_at"),
+        })
+    return json.dumps({"success": True, "query": query,
+                       "confirmed_only": confirmed_only,
+                       "count": len(out_rows), "results": out_rows},
+                      ensure_ascii=False)
+
+
 def register(ctx):
     """Register all tools with the Hermes framework (see lucky-calc shape)."""
     ctx.register_tool(
@@ -903,6 +983,13 @@ def register(ctx):
         schema=GET_SCHEMA,
         handler=_get_handler,
         emoji="🔍",
+    )
+    ctx.register_tool(
+        name="kb_search_central",
+        toolset="knowledge-base-search",
+        schema=KB_SEARCH_CENTRAL_SCHEMA,
+        handler=_kb_search_central_handler,
+        emoji="🌍",
     )
     # Write side: post_llm_call candidate detection + session-aggregated
     # clarify (pure rules, no new LLM call). The sibling-module import is

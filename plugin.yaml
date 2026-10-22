@@ -9,3 +9,4 @@ provides_tools:
   - knowledge_base_search
   - knowledge_base_ingest
   - knowledge_base_confirm
+  - kb_search_central
