@@ -119,8 +119,8 @@ def _svc():
             _kb_sm._svc_reconcile_once(_service)
         except Exception as e:
             logging.getLogger("knowledge-base").warning(
-                f"kb: startup reconcile failed (fail-soft, "
-                f"will retry next host start): {e}")
+                f"kb: startup reconcile failed (fail-soft; retry next "
+                f"host start): {e}")
     return _service
 
 

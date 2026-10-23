@@ -136,6 +136,33 @@ class TestReconcileLocalToCentral:
         assert second == first, f"host 生命周期第二次不该再对账: {first} -> {second}"
         # 还原
         sm.reconcile_local_to_central = orig_reconcile
+        sm._svc_reconciled = False  # P2: 哨兵收尾还原, 防跨用例泄漏
+
+    def test_failsoft_result_does_not_set_sentinel(self):
+        """P1: reconcile 返回 fail-soft (中央不可达) 时哨兵不置位, 下次 _svc()
+        重入会再跑 — 与 filemem Q1 "失败不置 flag" 语义对齐."""
+        svc = _fake_svc([{"docid": "d1"}])
+        calls = {"n": 0}
+
+        def _failsoft_reconcile(svc):
+            calls["n"] += 1
+            return {"status": "skipped", "reason": "fail-soft: conn refused",
+                    "missing": 0, "pushed": 0}
+
+        orig_reconcile = sm.reconcile_local_to_central
+        try:
+            sm._svc_reconciled = False
+            sm.reconcile_local_to_central = _failsoft_reconcile
+            r1 = sm._svc_reconcile_once(svc)
+            assert r1["status"] == "skipped"
+            assert sm._svc_reconciled is False, \
+                "fail-soft 结果不该置哨兵 (中央可达后再试)"
+            # 第二次重入 (模拟中央恢复后): 哨兵仍 False, 该再跑
+            r2 = sm._svc_reconcile_once(svc)
+            assert calls["n"] == 2, "fail-soft 后哨兵未置, 第二次重入应再对账"
+        finally:
+            sm.reconcile_local_to_central = orig_reconcile
+            sm._svc_reconciled = False
 
 
 def _doc_for(did):

@@ -455,7 +455,13 @@ def _svc_reconcile_once(svc) -> Dict[str, Any]:
         return {"status": "skipped", "reason": "already-reconciled",
                 "missing": 0, "pushed": 0}
     result = reconcile_local_to_central(svc)
-    _svc_reconciled = True
+    # P1 fix (reviewer 复盘 2026-10-23): 只有非 fail-soft 结果才置哨兵。
+    # fail-soft (中央不可达/token 拒) 不置 _svc_reconciled, 留给下次 _svc()
+    # 重入重试 — 与 filemem Q1 "失败不置 flag" 语义对齐. 中央长期不可达时
+    # 每个 _svc() 重入都重试 (对账是幂等差集查询, 成本可控); 中央可达时
+    # 一次置位, host 生命周期不再重跑.
+    if not str(result.get("reason", "")).startswith("fail-soft"):
+        _svc_reconciled = True
     if result.get("pushed", 0) > 0:
         logger.info(f"kb shared_memory: startup reconcile pushed "
                     f"{result['pushed']} missing docs to central "
