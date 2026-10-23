@@ -49,20 +49,40 @@ CONSENSUS_DOC_KINDS: tuple = ("reference", "material", "tutorial")
 
 def _load_shared_memory_config() -> Optional[Dict[str, Any]]:
     """读 plugins.entries.knowledge-base-search.shared_memory 段。
-    缺段 / enabled != true / 读 config 失败 -> None (no-op)。"""
-    try:
-        from hermes_cli.config import load_config, load_config_readonly
-    except Exception:
+
+    缺段 / enabled != true / 读 config 失败 -> None (no-op)。
+
+    (a) 直读 config.yaml 文件, 不借 hermes_cli.config / ruamel (owner 定稿
+    2026-10-23): 与 filemem shared_memory.py 对称。host tools-python 缺
+    ruamel/psycopg2/pyyaml — 宿主加载 kb 插件走 spec_from_file_location,
+    hermes_cli.config 的 load_config 读不到 ruamel -> 整条 no-op。改:
+      1. ruamel.yaml 可用 -> 用它 (anchor/alias: kb 段 pg: *id001 是 alias,
+         只有 ruamel/pyyaml 能解)
+      2. pyyaml 可用 -> 用它
+      3. 都没有 (host tools python) -> 纯文本最小解析 (kb 段是 alias *id001,
+         纯文本解析需回查同文件 &id001 定义取五键值 — filemem 是定义处,
+         kb 是引用处, 这里补 anchor 解析)
+    读文件路径: 机器级 (owner 定稿 2026-10-23): 1 profile = 1 agent 但差异
+    下沉 source_profile 行级列, agent_id 是机器级 (跨机 50 台 = 50 个
+    agent_id), 不是 per-profile。读序: HERMES_CONFIG env 优先 -> global
+    <HERMES_HOME>/config.yaml -> per-profile (HERMES_PROFILE 有值时兜底)。
+    全缺 -> None (no-op, 本地字节级不变)。"""
+    raw = _read_config_yaml_text()
+    if raw is None:
         return None
+    parsed: Optional[Dict[str, Any]] = None
     try:
-        config = load_config_readonly()
+        from ruamel.yaml import YAML
+        yaml_ = YAML(typ="safe")
+        parsed = yaml_.load(raw) or {}
     except Exception:
         try:
-            config = load_config()
+            import yaml as _pyyaml
+            parsed = _pyyaml.safe_load(raw) or {}
         except Exception:
-            return None
+            parsed = _parse_kb_shared_memory_minimal(raw)
     try:
-        entries = config.get("plugins", {}).get("entries", {})
+        entries = (parsed or {}).get("plugins", {}).get("entries", {})
         kb = entries.get("knowledge-base-search") or {}
         sm = kb.get("shared_memory")
         if not isinstance(sm, dict) or not sm.get("enabled"):
@@ -83,8 +103,156 @@ def _load_shared_memory_config() -> Optional[Dict[str, Any]]:
             },
         }
     except Exception as e:
-        logger.warning(f"kb shared_memory: config read failed, no-op: {e}")
+        logger.warning(f"kb shared_memory: config parse failed, no-op: {e}")
         return None
+
+
+def _read_config_yaml_text() -> Optional[str]:
+    """定位并读 config.yaml 全文 (owner 定稿 2026-10-23, 机器级 agent_id).
+
+    读序: 1. HERMES_CONFIG env  2. <HERMES_HOME>/config.yaml (global,
+    机器级 — multiplex 宿主无 HERMES_PROFILE env, 本机 12 profile 共用一份
+    机器级配置配在 global)  3. <HERMES_HOME>/profiles/<name>/config.yaml
+    (仅 HERMES_PROFILE 有值且 global 缺时兜底)。全缺 -> None。"""
+    import os
+    explicit = os.environ.get("HERMES_CONFIG", "").strip()
+    if explicit and os.path.isfile(explicit):
+        try:
+            with open(explicit, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            return None
+    home = os.environ.get("HERMES_HOME", "").strip()
+    if not home:
+        return None
+    candidates = [f"{home}/config.yaml"]
+    profile = os.environ.get("HERMES_PROFILE", "").strip()
+    if profile:
+        candidates.append(f"{home}/profiles/{profile}/config.yaml")
+    for p in candidates:
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                continue
+    return None
+
+
+def _parse_kb_shared_memory_minimal(raw: str) -> Dict[str, Any]:
+    """纯文本最小解析: 提取 plugins.entries.knowledge-base-search.shared_memory
+    段。kb 段内 pg 是 alias (pg: *id001) — 需在同文件找 &id001 定义处 (在
+    filemem.shared_memory.pg) 取五键值补进 pg_block。
+    filemem 段是 &id001 定义处, kb 段是 *id001 引用处。"""
+    import re
+    sm_block: Dict[str, Any] = {}
+    pg_block: Dict[str, Any] = {}
+    in_plugins = in_entries = in_kb = False
+    in_sm = in_pg = False
+    _sm_indent = 0
+    _entries_indent = 0
+    _SM_KEYS = {"enabled", "agent_id", "token"}
+    _PG_KEYS = {"host", "port", "db", "user", "password"}
+    anchor_pg: Optional[Dict[str, Any]] = None  # &id001 定义处的五键
+
+    def _scalar(v: str):
+        s = v.strip()
+        if s.lower() in ("true", "yes"):
+            return True
+        if s.lower() in ("false", "no"):
+            return False
+        return s
+
+    # pass 1: 抓 &id001 (或任意 &idNNN) 的 pg 定义 (在 filemem 段).
+    # 逐行扫: 见到 `pg: &NAME` 进 anchor 采集, 采集 pg 子块内的五键值;
+    # 行缩进回退到 pg 键级别以下 -> 离开该 anchor 定义.
+    anchor_active = False
+    anchor_pg_key_indent = 0
+    for line in raw.splitlines():
+        stripped = line.rstrip()
+        m = re.match(r"^(\s+)pg:\s*(\&)(\S+)\s*$", stripped)
+        if m:
+            anchor_active = True
+            anchor_pg = {}
+            anchor_pg_key_indent = len(m.group(1))
+            continue
+        if anchor_active:
+            pm = re.match(r"^(\s+)(\S+):(.*)$", stripped)
+            if pm:
+                k, rest, p_indent = pm.group(1), pm.group(2).strip(), len(pm.group(1))
+                if p_indent > anchor_pg_key_indent and k in _PG_KEYS and rest:
+                    anchor_pg[k] = _scalar(rest)
+                elif p_indent <= anchor_pg_key_indent and k not in _PG_KEYS:
+                    anchor_active = False
+    for line in raw.splitlines():
+        stripped = line.rstrip()
+        if not in_plugins:
+            if re.match(r"^plugins:\s*$", stripped):
+                in_plugins = True
+            continue
+        if not in_entries:
+            m = re.match(r"^(\s+)entries:\s*$", stripped)
+            if m:
+                in_entries = True
+                _entries_indent = len(m.group(1))
+            continue
+        if not in_kb:
+            m = re.match(r"^(\s+)(\S+):\s*$", stripped)
+            if m and len(m.group(1)) == _entries_indent + 2 and m.group(2) == "knowledge-base-search":
+                in_kb = True
+            continue
+        m = re.match(r"^(\s+)(\S+):(.*)$", stripped)
+        if not m:
+            continue
+        indent, key, rest = len(m.group(1)), m.group(2), m.group(3)
+        if not in_sm:
+            if key == "shared_memory" and not rest.strip():
+                in_sm = True
+                _sm_indent = indent
+                continue
+            if indent <= _entries_indent + 2:
+                break
+            continue
+        # in_sm
+        if in_pg:
+            if key in _PG_KEYS and rest.strip():
+                pg_block[key] = _scalar(rest)
+            elif key not in _PG_KEYS and indent <= _sm_indent + 2:
+                in_pg = False
+            continue
+        if key in _SM_KEYS and rest.strip():
+            sm_block[key] = _scalar(rest)
+        elif key == "pg" and not pg_block:
+            # alias 引用 (*id001): 用 pass 1 抓的 anchor 定义补
+            in_pg = True
+            if anchor_pg:
+                pg_block.update(anchor_pg)
+        if indent <= _sm_indent and key not in _SM_KEYS and key != "pg":
+            break
+    if not in_sm:
+        return {}
+    sm_block.setdefault("pg", pg_block)
+    return {"plugins": {"entries": {"knowledge-base-search": {"shared_memory": sm_block}}}}
+
+
+def _ensure_pg_dep_paths() -> None:
+    """Make psycopg2 importable from the running interpreter (mirror filemem's
+    _ensure_pg_dep_paths). psycopg2 lives in the shared plugin-venv, NOT the
+    host tools-python. No-op when the host already sees it; never blocks."""
+    import importlib.util
+    import os
+    import sys
+    if importlib.util.find_spec("psycopg2"):
+        return
+    site = os.environ.get(
+        "KB_PG_SITE",
+        "/root/.hermes/plugin-venv/lib/python3.14/site-packages",
+    )
+    if os.path.isdir(site) and site not in sys.path:
+        sys.path.append(site)
+
+
+_ensure_pg_dep_paths()
 
 
 class _PgConn:
