@@ -20,7 +20,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from handler_args import _normalize_handler_args
 
 # --- resolve the knowledge-base package (repo asset, not a site package) ----
 # The service lives in the project repo; make it importable from anywhere the
@@ -41,9 +40,15 @@ if _KB_DIR not in sys.path:
 # module-file load. No-op when the host already placed the plugin dir
 # on sys.path. Rollback-safe: deleting this two-line block restores the
 # prior host-only behaviour.
+# CRITICAL: this block MUST run before any sibling import below — the host
+# loads __init__.py via spec_from_file_location WITHOUT putting the plugin
+# dir on sys.path, so `from handler_args import ...` raises
+# "No module named 'handler_args'" if it executes before this bootstrap.
 _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
+
+from handler_args import _normalize_handler_args
 
 
 # --- KB deps resolve from the shared plugin venv (owner 10-08 directive) ------
