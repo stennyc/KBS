@@ -389,6 +389,80 @@ def _push_locked(svc, cfg: Dict[str, Any], new_docids: List[str]) -> Dict[str, A
         conn.close()
 
 
+# ── Q1 启动对账腿 (owner 定稿 2026-10-23, 选 A: _svc() 构造后挂, 模块级哨兵) ──
+
+_svc_reconciled = False  # 模块级 host 生命周期哨兵 (kb 是 hook/工具型插件,
+                         # _svc() 每 session 可能重入, 哨兵挂模块防 per-session 重置)
+
+
+def _all_local_docids(svc) -> List[str]:
+    """本地 hot+cold pkl 双快照 docid 全集 (对账基准源 = pkl, owner 定稿)."""
+    ids = set()
+    try:
+        for d in (svc._hot.docs_snapshot() + svc._cold.docs_snapshot()):
+            if d.get("docid"):
+                ids.add(str(d["docid"]))
+    except Exception:
+        pass
+    return sorted(ids)
+
+
+def reconcile_local_to_central(svc) -> Dict[str, Any]:
+    """Q1 启动对账腿: 本地 hot+cold 全集 docid vs 中央 kb_docs 差集补推
+    (幂等, 只推本地有中央无的, 根除重启/宕机期间 notify_confirmed 没 fire 的
+    缺口). 与 filemem reconcile_local_to_central 同型. fail-soft: 中央不可达/
+    token 拒静默跳过. 返回 {"status", "missing", "pushed"}.
+
+    基准源 = pkl 双快照 (非 staging_docs.jsonl): 它是本地权威源 (格式 B jsonl
+    是跨机导出格式, 本机对账用 pkl 零新依赖)."""
+    cfg = _load_shared_memory_config()
+    if cfg is None:
+        return {"status": "skipped", "reason": "config-absent-or-disabled",
+                "missing": 0, "pushed": 0}
+    conn = _PgConn(cfg["pg"])
+    try:
+        agent_id = cfg["agent_id"]
+        _central_auth(conn, agent_id, cfg.get("token", ""))
+        cur = conn.cur()
+        cur.execute(
+            "SELECT docid FROM kb_docs WHERE agent_id = %s", (agent_id,))
+        central_ids = {str(r[0]) for r in cur.fetchall()}
+        local_ids = _all_local_docids(svc)
+        missing = [d for d in local_ids if d not in central_ids]
+        if not missing:
+            return {"status": "ok", "missing": 0, "pushed": 0,
+                    "reason": "in-sync"}
+        with _local_lock:
+            result = _push_locked(svc, cfg, missing)
+        return {"status": result.get("status", "ok"),
+                "missing": len(missing), "pushed": result.get("pushed", 0)}
+    except _TokenRejected as e:
+        logger.warning(f"kb shared_memory reconcile token rejected: {e}")
+        return {"status": "rejected", "reason": "token-rejected",
+                "missing": 0, "pushed": 0}
+    except Exception as e:
+        logger.warning(f"kb shared_memory reconcile no-op (fail-soft): {e}")
+        return {"status": "skipped", "reason": f"fail-soft: {e}",
+                "missing": 0, "pushed": 0}
+    finally:
+        conn.close()
+
+
+def _svc_reconcile_once(svc) -> Dict[str, Any]:
+    """_svc() 构造后调用: 模块级哨兵守, host 生命周期只跑一次对账."""
+    global _svc_reconciled
+    if _svc_reconciled:
+        return {"status": "skipped", "reason": "already-reconciled",
+                "missing": 0, "pushed": 0}
+    result = reconcile_local_to_central(svc)
+    _svc_reconciled = True
+    if result.get("pushed", 0) > 0:
+        logger.info(f"kb shared_memory: startup reconcile pushed "
+                    f"{result['pushed']} missing docs to central "
+                    f"(gap from pre-restart notify_confirmed)")
+    return result
+
+
 def _read_local_doc(svc, did: str) -> Optional[Dict[str, Any]]:
     """从本地 confirmed corpus (hot + cold snapshot) 读 doc。"""
     try:

@@ -17,6 +17,7 @@ from __future__ import annotations
 import glob
 import importlib.util
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -109,6 +110,17 @@ def _svc():
         # a 7-gateway process re-entering must not duplicate handlers).
         configure_logging(_LOG_PATH)
         _service = KbSearchService(_DATA_DIR, audit_path=Path(_AUDIT_PATH))
+        # Q1 启动对账腿 (owner 定稿 2026-10-23, 选 A): svc 首次构造后做一次
+        # "本地 hot+cold 全集 vs 中央 kb_docs 差集补推" (幂等, 只推差集,
+        # 模块级哨兵守 host 生命周期一次, 防 _svc() per-session 重入再跑).
+        # fail-soft: 中央不可达/token 拒静默跳过, 绝不阻塞 svc 构造.
+        try:
+            import kb_shared_memory as _kb_sm
+            _kb_sm._svc_reconcile_once(_service)
+        except Exception as e:
+            logging.getLogger("knowledge-base").warning(
+                f"kb: startup reconcile failed (fail-soft, "
+                f"will retry next host start): {e}")
     return _service
 
 
