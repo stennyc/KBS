@@ -256,7 +256,14 @@ INGEST_SCHEMA = {
         "20 CJK chars; a short CJK string below ~20 chars is rejected as "
         "trivial; the gate measures UTF-8 BYTES, not characters, "
         "kb_service._CONTENT_MIN, 2026-10-19 owner decision) and a BM25 "
-        "near-duplicate self-check (no model, no external API)."
+        "near-duplicate self-check (no model, no external API). "
+        "Ceiling guidance: a doc whose content exceeds the 10000-byte "
+        "UTF-8 cap is REJECTED by the length gate — before ingesting, "
+        "measure content byte length and compress to under 10000 bytes "
+        "(keep the phenomenon/root-cause/fix/verification chain, trim "
+        "redundant phrasing), or run knowledge_base_distill on it "
+        "first. Retrying an over-cap doc without compressing or "
+        "distilling always re-rejects."
     ),
     "parameters": {
         "type": "object",
@@ -268,7 +275,33 @@ INGEST_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "title": {"type": "string"},
-                        "content": {"type": "string"},
+                        "content": {
+                            "type": "string",
+                            "description": (
+                                "The document body. OMIT when 'doc_file' is "
+                                "set — content is read from that file instead."
+                            ),
+                        },
+                        "doc_file": {
+                            "type": "string",
+                            "description": (
+                                "Optional: an absolute path, or a path relative "
+                                "to the KB data dir, to read 'content' from "
+                                "instead of inlining it. PREFER THIS for long "
+                                "or escape-heavy docs — it kills multi-layer "
+                                "JSON-escape payloads at the root (write the "
+                                "doc to a file with write_file, then point "
+                                "doc_file at it). When set, any 'content' "
+                                "field on the doc is ignored and overwritten "
+                                "by the file's text, and the doc_file key is "
+                                "removed before ingest so the "
+                                "content-addressed docid is identical to the "
+                                "inline-content equivalent (idempotent). "
+                                "Refused (whole call fails structurally) if "
+                                "the resolved path escapes the KB data dir or "
+                                "the file is missing/unreadable."
+                            ),
+                        },
                         "status": {
                             "type": "string",
                             "enum": ["pending", "confirmed"],
@@ -334,7 +367,11 @@ INGEST_SCHEMA = {
                             ),
                         },
                     },
-                    "required": ["title", "content"],
+                    "required": ["title"],
+                    "anyOf": [
+                        {"required": ["content"]},
+                        {"required": ["doc_file"]},
+                    ],
                 },
             },
         },
@@ -597,6 +634,99 @@ def _topic_search_handler(args: dict, **kwargs) -> str:
     return _json.dumps(payload, ensure_ascii=False)
 
 
+def _heal_escaped_content(docs: list) -> tuple[list, list]:
+    """A-guard (2026-11-04): peel EXACTLY ONE layer of accidental
+    JSON-serialization off each doc's string fields (title/content).
+
+    The host tool_call wrapper stringifies the WHOLE args payload; when the
+    MODEL ALSO json.dumps'd a doc's content field (or the payload was
+    double-serialized end-to-end), the content value arrives as a
+    JSON-encoded string literal instead of the raw text:
+    ``"content": "\"real text\\\\n\""`` — a string that ITSELF parses back
+    to a string. That shape used to trip repeated rejections on the tool
+    face; this guard detects it and peels one layer so the ingest lands.
+
+    Detection (conservative, per field): the value is a non-empty str,
+    its stripped form is a valid JSON string LITERAL (starts/ends with
+    double-quote and json.loads returns another str — NOT a dict/list,
+    which would mean the caller MEANT a JSON blob as content), and is
+    therefore peeled. One layer only: no recursion (a double-dumped
+    payload still has one accidental layer left and the next tool face
+    retry is fine; recursive unrolling risks mis-peeling legitimate
+    JSON-blob content). Non-string fields, empty strings, non-dict docs,
+    and invalid-JSON strings pass through UNCHANGED.
+
+    Pure function, zero I/O — returns ``(healed_docs, notes)`` where
+    ``notes[i]`` is None (doc i untouched) or a short human-readable note
+    describing the peel. The original list is not mutated.
+    """
+    import json as _json
+    healed: list = []
+    notes: list = []
+    for i, doc in enumerate(docs):
+        note: str | None = None
+        if isinstance(doc, dict):
+            fixed = dict(doc)
+            for field in ("title", "content"):
+                val = fixed.get(field)
+                if not isinstance(val, str) or not val:
+                    continue
+                s = val.strip()
+                if len(s) < 2 or not (s[0] == '"' and s[-1] == '"'):
+                    continue
+                try:
+                    inner = _json.loads(s)
+                except (ValueError, _json.JSONDecodeError):
+                    continue
+                if isinstance(inner, str):
+                    fixed[field] = inner
+                    note = (note + "; " if note else "") + (
+                        f"peeled one accidental JSON-serialization layer off "
+                        f"'{field}' (was {len(val)} -> {len(inner)} chars)"
+                    )
+            healed.append(fixed)
+        else:
+            healed.append(doc)
+        notes.append(note)
+    return healed, notes
+
+
+def _read_doc_file(doc_file: str, data_dir: Path) -> tuple[str | None, str | None]:
+    """B: read a doc's content from a file on disk instead of inlining it.
+
+    ``doc_file`` is either an absolute path or a path relative to
+    ``data_dir`` (the KB data dir). The RESOLVED path must stay inside
+    ``data_dir`` — anything escaping the root (``../../etc/passwd``,
+    an absolute path under a sibling dir, a symlink out of the root) is
+    refused. Returns ``(text, None)`` on success, ``(None, error)`` on
+    refusal/read failure.
+
+    Pure I/O — no service state; callers delete the ``doc_file`` key from
+    the doc dict BEFORE ingest so the content-addressed docid
+    (uuid5 over the whole dict) is identical for the inline-content and
+    doc_file-read versions of the same document.
+    """
+    p = Path(doc_file).expanduser()
+    if not p.is_absolute():
+        p = data_dir / p
+    try:
+        resolved = p.resolve()
+    except OSError as exc:
+        return None, f"doc_file '{doc_file}': path resolution failed ({exc})"
+    try:
+        resolved.relative_to(data_dir)
+    except ValueError:
+        return None, (f"doc_file '{doc_file}' resolves outside the KB data "
+                      f"dir ({data_dir}); refused.")
+    if not resolved.is_file():
+        return None, f"doc_file '{doc_file}' is not a readable file."
+    try:
+        text = resolved.read_text(encoding="utf-8")
+    except OSError as exc:
+        return None, f"doc_file '{doc_file}' read failed: {exc}"
+    return text, None
+
+
 def _ingest_handler(args: dict, **kwargs) -> str:
     args = _normalize_handler_args(args)
     if args.get("status") == "error":
@@ -606,7 +736,55 @@ def _ingest_handler(args: dict, **kwargs) -> str:
     if not docs:
         return json.dumps({"status": "error",
                            "error": "no docs provided"}, ensure_ascii=False)
-    result = svc.ingest(docs)
+
+    # A-guard: peel one accidental JSON-serialization layer off string
+    # fields (title/content) so a double-dumped model payload still lands
+    # instead of getting re-rejected. Per-doc notes surface in out below.
+    docs, escape_notes = _heal_escaped_content(docs)
+
+    # B: doc_file override — a doc whose 'content' is absent or is pointed
+    # at a file on disk via 'doc_file' has its content read from that file
+    # (root-constrained to the KB data dir). The doc_file key is then
+    # DELETED so the content-addressed docid matches the inline-content
+    # equivalent. A read failure for ANY doc fails the WHOLE call
+    # structurally (no partial ingest of a mis-specified batch).
+    #
+    # Required-field guard (m-5, same discipline as m-1..m-4): the schema
+    # says each doc needs 'content' OR 'doc_file'; a dict doc carrying
+    # NEITHER (or a non-dict doc) is a malformed batch — fail the whole
+    # call structurally, never ingest a doc whose body is empty.
+    resolved_docs: list = []
+    for doc in docs:
+        if not isinstance(doc, dict):
+            return json.dumps({"status": "error",
+                               "error": (
+                                   f"malformed doc #{len(resolved_docs)}: "
+                                   f"a doc must be an object with 'title' "
+                                   f"and 'content' (or 'doc_file')")},
+                              ensure_ascii=False)
+        has_content = bool(str(doc.get("content") or "").strip())
+        has_doc_file = bool(str(doc.get("doc_file") or "").strip())
+        if not has_content and not has_doc_file:
+            return json.dumps({"status": "error",
+                               "error": (
+                                   f"malformed doc #{len(resolved_docs)}: "
+                                   f"'content' or 'doc_file' is required "
+                                   f"(title={doc.get('title')!r})")},
+                              ensure_ascii=False)
+        if has_doc_file:
+            text, err = _read_doc_file(str(doc["doc_file"]), _DATA_DIR)
+            if err:
+                return json.dumps({"status": "error",
+                                   "error": f"doc_file: {err}"},
+                                  ensure_ascii=False)
+            merged = dict(doc)
+            merged.pop("doc_file", None)
+            merged["content"] = text
+            resolved_docs.append(merged)
+        else:
+            resolved_docs.append(doc)
+
+    result = svc.ingest(resolved_docs)
     svc.persist()  # make ingested docs durable across process restarts
     # P0 governance summary: which docs confirmed (searchable), which were
     # rejected (length/dup gate), which are staged pending user confirm.
@@ -617,6 +795,18 @@ def _ingest_handler(args: dict, **kwargs) -> str:
         "staged": result.get("staged", []),
         "generation": result.get("generation"),
     }
+    # Payload normalization notes (A-guard peels + B doc_file reads) so the
+    # caller sees the payload was healed rather than silently mis-read.
+    # `docs` here is the post-heal list; a doc that still carries the
+    # doc_file key used the file path — report it explicitly (the key is
+    # already popped from resolved_docs, so it can't be seen there).
+    payload_notes = [n for n in escape_notes if n]
+    for doc in docs:
+        if isinstance(doc, dict) and "doc_file" in doc:
+            payload_notes.append(
+                f"content read from doc_file '{doc['doc_file']}'")
+    if payload_notes:
+        out["payload_notes"] = payload_notes
     if result.get("staged"):
         out["hint"] = (
             "Staged docs are NOT searchable until confirmed. Call "
@@ -624,10 +814,41 @@ def _ingest_handler(args: dict, **kwargs) -> str:
             "after obtaining user consent to move them into the corpus."
         )
     if result.get("rejected"):
-        out["note"] = (
-            "Rejected docs failed the length gate or the BM25 near-duplicate "
-            "self-check; see 'rejected' for the per-doc reason."
-        )
+        # Context-aware rejection guidance (10-28 lesson: over-cap docs got
+        # retried 3x with no hint about the byte limit). Carry the exact
+        # gate bounds + actionable fix for length_gate, per-reason hint
+        # otherwise — the agent should be able to act on 'rejected' without
+        # reading kb_service.py.
+        gate = next((r for r in result["rejected"]
+                     if r.get("reason") == "length_gate"), None)
+        if gate is not None:
+            field = str(gate.get("field", "content"))
+            bounds = gate.get("bounds") or [None, None]
+            unit = str(gate.get("unit", "chars"))
+            lo, hi = bounds[0], bounds[1]
+            if field == "content":
+                reject_hint = (
+                    f"Length gate rejected '{gate.get('doc_id')}' on content: "
+                    f"got={gate.get('got')} UTF-8 bytes, allowed {lo}-{hi} UTF-8 bytes. "
+                    f"Compress the body under {hi} UTF-8 bytes (keep the "
+                    f"phenomenon/root-cause/fix/verification chain; trim redundant "
+                    f"phrasing) or run knowledge_base_distill on it first, then "
+                    f"re-ingest. Retrying the same over-cap content re-rejects."
+                )
+            else:
+                reject_hint = (
+                    f"Length gate rejected '{gate.get('doc_id')}' on {field}: "
+                    f"got={gate.get('got')} {unit}, allowed {lo}-{hi} {unit}. "
+                    f"Adjust the {field} into that range and re-ingest."
+                )
+            out["hint"] = (reject_hint
+                           if "hint" not in out else
+                           out["hint"] + " " + reject_hint)
+        else:
+            out["note"] = (
+                "Rejected docs failed the length gate or the BM25 near-duplicate "
+                "self-check; see 'rejected' for the per-doc reason."
+            )
     return json.dumps(out, ensure_ascii=False)
 
 
