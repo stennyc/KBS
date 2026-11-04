@@ -263,7 +263,15 @@ INGEST_SCHEMA = {
         "(keep the phenomenon/root-cause/fix/verification chain, trim "
         "redundant phrasing), or run knowledge_base_distill on it "
         "first. Retrying an over-cap doc without compressing or "
-        "distilling always re-rejects."
+        "distilling always re-rejects. "
+        "Payload hygiene (2026-11-04): for docs whose body is long or "
+        "escape-heavy (quotes, newlines, code blocks, CJK) PREFER "
+        "doc_file over inline content — write the body to a file under "
+        "the KB data dir with write_file, then point doc_file at it. "
+        "Inlined long bodies bloat the tool_call envelope and make it "
+        "fail host-side JSON parsing; a doc_file payload stays tiny. "
+        "Short plain-text docs (< ~1KB, no code blocks) may still use "
+        "inline content."
     ),
     "parameters": {
         "type": "object",

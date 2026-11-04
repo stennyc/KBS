@@ -140,6 +140,93 @@ class IngestSchemaDescriptionTests(unittest.TestCase):
         self.assertIn("60-10000 UTF-8 bytes", desc)
         self.assertIn("UTF-8 BYTES", desc)
 
+    def test_ingest_schema_advertises_10000_byte_ceiling_guidance(self):
+        """指导面: agent 必须在调用前就知道 content 上限是 10000 UTF-8 字节,
+        超了要压缩/蒸馏而不是反复重试(10-28 教训: 11k 教程被拒 3 次)。"""
+        desc = kb.INGEST_SCHEMA["description"]
+        self.assertIn("10000", desc)
+        # 必须给出超限的处置指引(压缩或 distill), 不是只丢一个数字
+        self.assertIn("distill", desc)
+        # 拒绝记录必须带上限边界(got/bounds), 让 agent 一次看清差距
+        svc = kb._svc()
+        big = "占" * 4000  # 12000 UTF-8 bytes > 10000 上限
+        out = json.loads(kb._ingest_handler({
+            "docs": [{"title": "长文档测试", "content": big, "status": "confirmed"}]
+        }))
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(len(out["rejected"]), 1)
+        rej = out["rejected"][0]
+        self.assertEqual(rej["reason"], "length_gate")
+        self.assertEqual(rej["field"], "content")
+        self.assertGreater(rej["got"], 10000)
+        self.assertEqual(rej["bounds"], [60, 10000])
+        self.assertEqual(rej["unit"], "bytes_utf8")
+
+
+    def test_ingest_schema_advertises_doc_file_payload_hygiene(self):
+        """2026-11-04 (选项②, 绝不改 hermes 侧): 宿主 tool_call 外层信封
+        json.loads 在长 content 时炸 (tool_search_validation.py:160),
+        kb 插件侧的对策 = 工具面引导模型走 doc_file 缩小信封, 不动宿主。
+        schema description 必须带这条引导, 否则 LLM 不知道该改走 doc_file。"""
+        desc = kb.INGEST_SCHEMA["description"]
+        self.assertIn("doc_file", desc)
+        self.assertIn("Payload hygiene", desc)
+        self.assertIn("bloat the tool_call envelope", desc)
+        self.assertIn("escape-heavy", desc)
+
+
+class IngestRejectGuidanceTests(unittest.TestCase):
+    """_ingest_handler 的 reject 响应必须自带可执行的处置指引,
+    让 agent 看到 rejected 就知道往 60-10000 字节之间压, 不用读源码。"""
+
+    def setUp(self):
+        install_isolated_service()
+
+    def test_rejected_doc_carries_actionable_hint(self):
+        big = "超" * 3500  # 10500 bytes, 刚好过上限
+        out = json.loads(kb._ingest_handler({
+            "docs": [{"title": "超限文档标题", "content": big, "status": "confirmed"}]
+        }))
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(len(out["rejected"]), 1)
+        # 拒绝记录必须带 content length_gate + bounds
+        rej = out["rejected"][0]
+        self.assertEqual(rej["reason"], "length_gate")
+        self.assertEqual(rej["field"], "content")
+        # 顶层 must-carry hint, 带 10000 上限 + distill 指引
+        self.assertIn("hint", out)
+        hint = out["hint"]
+        self.assertIn("10000", hint)
+        self.assertIn("UTF-8 bytes", hint)
+        self.assertIn("distill", hint)
+
+    def test_title_gate_rejection_hint_points_at_title(self):
+        # 标题过短(4 chars < 5 min)走 title 分支, hint 必须指向 title 而非 content
+        out = json.loads(kb._ingest_handler({
+            "docs": [{"title": "短", "content": "正文内容" * 20, "status": "confirmed"}]
+        }))
+        rej = out["rejected"][0]
+        self.assertEqual(rej["field"], "title")
+        self.assertIn("hint", out)
+        self.assertIn("title", out["hint"])
+
+    def test_staged_plus_rejected_hints_both_present(self):
+        # 同一次调用既有 staged(pending)又有 rejected(over-cap content),
+        # hint 必须保留 staged 指引 + 追加 length-gate 指引, 不能互相覆盖
+        out = json.loads(kb._ingest_handler({"docs": [
+            {"title": "待确认文档标题", "content": "这是待确认正文" * 5,
+             "status": "pending"},
+            {"title": "超限文档标题", "content": "超" * 3500,
+             "status": "confirmed"},
+        ]}))
+        self.assertIn("hint", out)
+        hint = out["hint"]
+        # staged 侧(需 confirm)
+        self.assertIn("confirm", hint)
+        # rejected 侧(length gate + distill 指引)
+        self.assertIn("Length gate", hint)
+        self.assertIn("distill", hint)
+
 
 if __name__ == "__main__":
     unittest.main()
