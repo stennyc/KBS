@@ -167,12 +167,15 @@ class IngestSchemaDescriptionTests(unittest.TestCase):
         """2026-11-04 (选项②, 绝不改 hermes 侧): 宿主 tool_call 外层信封
         json.loads 在长 content 时炸 (tool_search_validation.py:160),
         kb 插件侧的对策 = 工具面引导模型走 doc_file 缩小信封, 不动宿主。
-        schema description 必须带这条引导, 否则 LLM 不知道该改走 doc_file。"""
+        2026-11-07 硬化: 措辞从偏好(PREFER)升为硬规则(HARD RULE/MUST),
+        因 2026-11-07 session 20261106_123823_1788b9 实测模型 5 连内联
+        3.9KB 文档、信封 char 2930 处炸; schema description 必须带这条引导,
+        否则 LLM 不知道该改走 doc_file。"""
         desc = kb.INGEST_SCHEMA["description"]
         self.assertIn("doc_file", desc)
-        self.assertIn("Payload hygiene", desc)
-        self.assertIn("bloat the tool_call envelope", desc)
-        self.assertIn("escape-heavy", desc)
+        self.assertIn("Payload discipline", desc)
+        self.assertIn("HARD RULE", desc)
+        self.assertIn("MUST use doc_file", desc)
 
 
 class IngestRejectGuidanceTests(unittest.TestCase):

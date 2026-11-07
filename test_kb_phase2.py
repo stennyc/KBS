@@ -52,6 +52,19 @@ from kb_ingest_hook import (  # noqa: E402
 )
 from kb_ingest_rules import Candidate  # noqa: E402
 
+# S6 read-side isolation: the referral-hint branch consults
+# kb_shared_memory._load_shared_memory_config(), which resolves
+# <HERMES_HOME>/config.yaml when HERMES_HOME is set. The host test runner
+# exports HERMES_HOME (e.g. /root/.hermes/profiles/coder), and that config
+# HAS a kb shared_memory section -> enabled -> the zero-hit / falsified /
+# decayed cases emit the cross-device referral hint and break the
+# "must be {}" assertions below. Point the loader at a non-existent home
+# so the module resolves None (no shared_memory config) in unit tests.
+import os
+os.environ["HERMES_HOME"] = "/nonexistent-kb-test-home"
+os.environ["HERMES_CONFIG"] = ""
+os.environ["HERMES_PROFILE"] = ""
+
 
 def _load_pkl_docs(path: Path) -> list:
     if not path.exists():
