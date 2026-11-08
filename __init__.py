@@ -843,6 +843,54 @@ def _ingest_handler(args: dict, **kwargs) -> str:
         else:
             resolved_docs.append(doc)
 
+    # 11-08 manual-ingest LLM topic auto-classify (owner 方案②, write-side
+    # LLM face #2): after doc_file resolution (so the LLM sees the REAL
+    # content, not just the title), for each doc that does NOT explicitly
+    # carry a topic, ask the host main-model to pick the best topic tag
+    # from the valid vocab (built-in TOPIC_VOCAB + custom_topics.jsonl
+    # project tags). Budget: 3 LLM calls per tool_call so one large batch
+    # cannot burn the whole session. Any failure (no host runtime, host
+    # down, timeout, unparseable / out-of-vocab reply, over-budget) leaves
+    # the doc's topic UNTOUCHED — the floor "general" (stamped later by
+    # svc.ingest's _normalize_docs when the key is absent) stands. A doc
+    # that DID carry an explicit topic is NEVER overridden (explicit
+    # user/agent input wins; the LLM face only fills the gap).
+    topic_notes: list = []
+    from kb_ingest_rules import TOPIC_VOCAB
+    from kb_ingest_hook import _llm_topic_classify, _custom_topics
+    _TOPIC_AUTO_LIMIT = 3
+    valid_topics = list(TOPIC_VOCAB) + list(_custom_topics())
+    # A main_runtime snapshot is only available in a host-driven process;
+    # a standalone / no-host call gets None -> every auto-classify is a
+    # no-op floor (fail-soft: the manual face must never break on the
+    # LLM face's absence).
+    main_runtime = None
+    try:
+        from kb_ingest_hook import _norm_main_runtime
+        if _norm_main_runtime is not None:
+            main_runtime = _norm_main_runtime(None)
+    except Exception:
+        main_runtime = None
+    topic_calls = 0
+    for doc in resolved_docs:
+        if not isinstance(doc, dict):
+            continue
+        explicit = str(doc.get("topic") or "").strip()
+        if explicit:
+            continue  # explicit topic wins — the LLM face never overrides it
+        if main_runtime is None or topic_calls >= _TOPIC_AUTO_LIMIT:
+            continue  # no host / over-budget: floor stands, no call
+        title = str(doc.get("title") or "").strip()
+        body = str(doc.get("content") or "")[:1500]
+        picked = _llm_topic_classify(
+            main_runtime, f"{title}\n{body}", valid_topics)
+        topic_calls += 1
+        if picked:
+            doc["topic"] = picked
+            topic_notes.append(
+                f"topic auto-classified to '{picked}' for "
+                f"'{title[:50]}' (LLM write-side face)")
+
     result = svc.ingest(resolved_docs)
     svc.persist()  # make ingested docs durable across process restarts
     # P0 governance summary: which docs confirmed (searchable), which were
@@ -859,7 +907,7 @@ def _ingest_handler(args: dict, **kwargs) -> str:
     # `docs` here is the post-heal list; a doc that still carries the
     # doc_file key used the file path — report it explicitly (the key is
     # already popped from resolved_docs, so it can't be seen there).
-    payload_notes = [n for n in escape_notes if n]
+    payload_notes = [n for n in escape_notes if n] + topic_notes
     for doc in docs:
         if isinstance(doc, dict) and "doc_file" in doc:
             payload_notes.append(
