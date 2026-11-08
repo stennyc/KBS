@@ -589,14 +589,16 @@ CONFIRM_TOPIC_SCHEMA = {
             },
             "topic": {
                 "type": ["string", "null"],
-                "enum": ["messaging", "deployment", "data-pipeline",
-                         "frontend", "general", None],
                 "description": (
                     "Task-topic coarse filter (exact metadata match). "
-                    "Must be a TOPIC_VOCAB value or null (null/"
-                    "omitted = no topic gate, whole agent partition). "
-                    "Out-of-vocabulary values are rejected, not "
-                    "searched."
+                    "A built-in TOPIC_VOCAB value (messaging / deployment "
+                    "/ data-pipeline / frontend / general) OR an owner "
+                    "project tag listed in kb-data/custom_topics.jsonl "
+                    "(extensible without a code deploy — 11-08). "
+                    "null / omitted = no topic gate, whole agent "
+                    "partition. An unknown value is rejected with an "
+                    "error payload listing the valid values (NOT a "
+                    "silent zero-hit search)."
                 ),
             },
             "top_k": {

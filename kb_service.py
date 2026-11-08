@@ -1407,6 +1407,83 @@ class KbSearchService:
         finally:
             self._close_lock(fd)
 
+    def set_topic(self, doc_id: str,
+                  new_topic: Optional[str]) -> dict:
+        """Re-label a CONFIRMED doc's ``topic`` IN PLACE (same docid,
+        every-other-key untouched) — the supported path for moving a
+        legacy general-topic doc into an owner project tag (11-08,
+        same project-classification axis as custom_topics.jsonl)
+        without re-minting its docid (re-minting would trip the B2
+        near-dup gate; this in-place replace doesn't, same invariant
+        as set_doc_kind).
+
+        ``new_topic`` must be a TOPIC_VOCAB value OR an entry in
+        kb-data/custom_topics.jsonl (the owner-extensible project
+        tags) or None (None = no-op, keep the current value — this
+        axis is always labeled, clearing back to "unlabeled" is not
+        a legal topic value, the default "general" is). Out-of-vocab
+        values are rejected + audited (the same clarity semantics as
+        topic_search's invalid_topic).
+
+        Skeleton: EX lock + rebase + in-place replace + flush + audit
+        (mirrors set_doc_kind verbatim; audit action=topic_change /
+        topic_change_rejected).
+        """
+        doc_id = str(doc_id or "").strip()
+        if not doc_id:
+            return {"status": "error", "error": "doc_id required"}
+        # Validate the target value up front (cheap, no lock needed).
+        if new_topic is not None:
+            # Lazy import: kb_ingest_hook loads the sibling kb_ingest_rules
+            # via the plugin-dir sys.path bootstrap; keep the dependency
+            # edge out of kb_service's module top (same lazy precedent as
+            # _probe_conflicts' kb_ingest_hook import).
+            try:
+                from kb_ingest_hook import _all_topics
+            except Exception:
+                _all_topics = None
+            valid = _all_topics() if _all_topics is not None else ()
+            if new_topic not in valid:
+                self._audit(action="topic_change_rejected",
+                            doc_id=doc_id, to=new_topic,
+                            error="invalid_topic",
+                            reason=("topic must be a TOPIC_VOCAB value "
+                                    "or a kb-data/custom_topics.jsonl "
+                                    "entry"))
+                return {"status": "error", "error": "invalid_topic",
+                        "doc_id": doc_id,
+                        "value": new_topic,
+                        "allowed": list(valid)}
+        fd = self._open_lock(exclusive=True)
+        try:
+            self._rebase()
+            current = self._find_confirmed_doc(doc_id)
+            if current is None:
+                self._audit(action="topic_change_rejected",
+                            doc_id=doc_id, to=new_topic,
+                            error="not_found")
+                return {"status": "error", "error": "not_found",
+                        "doc_id": doc_id}
+            from_topic = current.get("topic")
+            if new_topic is None or new_topic == from_topic:
+                # No-op: keep the row byte-identical (no audit write,
+                # no replace — a same-value re-label is a no-op, not a
+                # "change" worth recording).
+                return {"status": "success", "doc_id": doc_id,
+                        "topic": from_topic, "note": "no-op"}
+            modified = dict(current)
+            modified["topic"] = new_topic
+            self._replace_confirmed_in_place(modified)
+            self._flush()
+            self._audit(action="topic_change", doc_id=doc_id,
+                        from_topic=from_topic, to=new_topic)
+            logger.info("set_topic doc_id=%s %r -> %r",
+                        doc_id, from_topic, new_topic)
+            return {"status": "success", "doc_id": doc_id,
+                    "from_topic": from_topic, "to": new_topic}
+        finally:
+            self._close_lock(fd)
+
     def _is_superseded(self, doc: Dict[str, Any]) -> bool:
         """True iff the confirmed row carries an active superseded_by
         stamp (the drop-from-pool predicate, shared by the search()

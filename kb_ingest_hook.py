@@ -1526,6 +1526,34 @@ def _is_agent_result(result: dict) -> bool:
 #     store touch, no pre_llm_call path change.
 # ---------------------------------------------------------------------------
 
+def _custom_topics() -> tuple:
+    """Owner-extensible topic vocab (11-08): one line per project tag in
+    kb-data/custom_topics.jsonl. Loaded fresh per call so the owner can
+    add a new project tag WITHOUT a code deploy. Fail-soft: missing /
+    unreadable file -> (). Case-sensitive (same as TOPIC_VOCAB)."""
+    import os as _os
+    from pathlib import Path as _Path
+    p = _Path(_os.environ.get("KB_DATA_DIR",
+                              "/root/.hermes/kb-data")) / "custom_topics.jsonl"
+    if not p.exists():
+        return ()
+    try:
+        out = []
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                out.append(line)
+        return tuple(out)
+    except OSError:
+        return ()
+
+
+def _all_topics() -> tuple:
+    """Built-in TOPIC_VOCAB + owner-defined custom_topics.jsonl entries."""
+    from kb_ingest_rules import TOPIC_VOCAB
+    return tuple(TOPIC_VOCAB) + _custom_topics()
+
+
 def _topic_search_filters(topic, profile: Optional[str]) -> dict:
     """TR-3 filters dict: the topic exact-match key + the agent
     partition + the implicit source_profile scoping (None profile ->
@@ -1553,20 +1581,22 @@ def topic_search_service_args(query: str, topic, top_k: int = 5) -> dict:
         (the plain agent-partition search; the topic key is omitted
         from the filters dict entirely).
 
-    Raises ValueError for a non-empty topic not in TOPIC_VOCAB."""
-    from kb_ingest_rules import TOPIC_VOCAB
+    Raises ValueError for a non-empty topic not in the union of
+    TOPIC_VOCAB + custom_topics.jsonl (11-08 owner-extensible project
+    tags — no deploy needed to add a new project)."""
     t: Optional[str] = None
     if topic is not None:
         topic = str(topic).strip()
         if topic:
-            # No case-folding: the vocab is case-sensitive ('M' /
-            # 'GENERAL' are out-of-vocabulary values, not aliases).
-            if topic not in TOPIC_VOCAB:
+            valid = _all_topics()
+            if topic not in valid:
                 raise ValueError(
                     f"invalid topic {topic!r}: expected one of "
-                    f"{list(TOPIC_VOCAB)} "
-                    f"(kb_ingest_rules.TOPIC_VOCAB — first-phase enum; "
-                    f"extend via owner review only)")
+                    f"{list(valid)} "
+                    f"(built-in kb_ingest_rules.TOPIC_VOCAB + "
+                    f"kb-data/custom_topics.jsonl owner project tags; "
+                    f"add a new line to custom_topics.jsonl to extend "
+                    f"without a deploy)")
             t = topic
     return {
         "query": str(query or ""),
