@@ -1199,7 +1199,13 @@ KB_SEARCH_CENTRAL_SCHEMA = {
         "(其他设备已确认的知识库文档) — 别人的参考知识. 纯只读 SQL: 不写本地 "
         "jsonl / 不重建 pkl / 不自动注入 / 不回写本地. 结果只活在本轮工具返回, "
         "下一轮即失效. 本地知识库召回 < 2 条、或需参考其他设备共享知识时调用; "
-        "confirmed_only=true 只回 confirmed 共识, false 回全量沉淀."
+        "confirmed_only=true 只回 confirmed 共识, false 回全量沉淀. "
+        "【路由: 何时用我】查【长知识文档】的中央层: 某主题的教程/排查方案/参考材料/agent 经验沉淀 "
+        "(带 title+content+doc_kind 的长文). 与 filemem 中央层 (shared_memory_search, 查 memories 表, "
+        "存短事实/偏好/决定/跨 session 延续) 是两套不同的表. 一句话: 查'某主题怎么做的教程/经验' -> 用我; "
+        "查'用户偏好/做过什么决定/环境事实' -> 用 shared_memory_search. 拿不准或怕漏 -> 两边都查. "
+        "注意: 共识面 (confirmed_only=true) 只放行 doc_kind IN (reference/material/tutorial), "
+        "doc_kind=NULL 的料进不了共识面, 需用 confirmed_only=false 翻全量."
     ),
     "parameters": {
         "type": "object",
