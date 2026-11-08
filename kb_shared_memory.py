@@ -516,10 +516,20 @@ def search_central(cfg: Dict[str, Any], query: str,
         params.append(limit)
         cur.execute(sql, params)
         rows = cur.fetchall()
+        def _ts(v):
+            """timestamptz -> ISO string (json.dumps 前必须去掉 datetime 对象)."""
+            if v is None:
+                return None
+            if hasattr(v, "isoformat"):
+                return v.isoformat()
+            return v
         return [
             dict(zip(["docid", "title", "content", "source_profile", "agent_id",
                       "version", "version_ts", "occurred_at", "status", "doc_kind",
-                      "meta"], r)) for r in rows
+                      "meta"],
+                    [r[0], r[1], r[2], r[3], r[4], r[5],
+                     _ts(r[6]), _ts(r[7]), r[8], r[9], r[10]]))
+            for r in rows
         ]
     except _TokenRejected:
         return []
