@@ -199,6 +199,82 @@ _LLM_JUDGE_SCHEMA = {
 }
 
 
+def _llm_topic_classify(main_runtime, text: str,
+                        valid_topics: list) -> Optional[str]:
+    """Budget-gated host-LLM project-topic classification of one
+    auto-captured knowledge unit (11-08, owner 方案②).
+
+    Asks the host main-model to pick the best topic tag for `text`
+    from `valid_topics` (built-in TOPIC_VOCAB + custom_topics.jsonl
+    project tags). Returns the chosen tag (a valid list entry), or
+    None on ANY failure — no main runtime / host call surface missing /
+    host down / timeout / unparseable reply / a value not in
+    valid_topics. None is the caller's "keep the floor value"
+    signal (fail-soft: the LLM face is an ENHANCEMENT, never the only
+    classifier; the regex/capture floor "general" stands when this
+    returns None).
+
+    Same host-channel discipline as _llm_judge_candidate: explicit
+    main_runtime, no task key, no custom provider (user rule ⑤);
+    temperature 0.0, tiny max_tokens (the reply is a single tag).
+    """
+    import json as _json
+    import re as _re
+    if _HOST_CALL_LLM is None or not isinstance(main_runtime, dict) \
+            or not main_runtime:
+        return None
+    if not valid_topics:
+        return None
+    try:
+        user_msg = (
+            "你是知识库项目标签分类器。给定一段知识经验文本，"
+            "从下列标签中选出最贴切的一个项目/主题标签。\n"
+            "标签列表（必须从其中选，不得发明新标签）：\n"
+            + "\n".join(f"- {t}" for t in valid_topics)
+            + "\n\n若都不贴切，选 general。\n\n"
+            "只输出标签本身（一个单词/短语），不要解释，不要 JSON，"
+            "不要引号。\n\n知识文本：\n" + text[:2000]
+        )
+        route_info: dict = {}
+        response = _HOST_CALL_LLM(
+            main_runtime=main_runtime,
+            messages=[{"role": "user", "content": user_msg}],
+            temperature=0.0,
+            max_tokens=24,
+            timeout=_LLM_JUDGE_TIMEOUT,
+            route_info=route_info,
+        )
+    except Exception as exc:
+        logger.debug("kb LLM topic classify failed (%s); "
+                     "keeping floor topic", exc)
+        return None
+    # Extract assistant text (dict- or namespace-shaped response).
+    try:
+        msg = response["choices"][0]["message"] if isinstance(response, dict) \
+            else response.choices[0].message
+        content = msg.get("content") if isinstance(msg, dict) \
+            else getattr(msg, "content", None)
+        if isinstance(content, list):
+            content = "".join(str(p.get("text") if isinstance(p, dict)
+                                else getattr(p, "text", "")) for p in content)
+        text_out = (content or "").strip()
+    except Exception:
+        return None
+    # Strip optional fence + surrounding quotes; take the first token-ish
+    # value (the reply is meant to be a bare tag).
+    m = _re.search(r"```(?:json)?\s*(.+?)```", text_out,
+                   _re.DOTALL | _re.IGNORECASE)
+    raw = m.group(1).strip() if m else text_out
+    raw = raw.strip('"').strip("'").strip()
+    # The LLM may echo with a little prose; accept only an EXACT match
+    # against the valid list (case-sensitive, the same discipline as
+    # TOPIC_VOCAB) — anything else is None (floor stands).
+    for t in valid_topics:
+        if raw == t:
+            return t
+    return None
+
+
 def _llm_judge_candidate(main_runtime, text: str,
                          fallback: "Candidate") -> "Optional[Candidate]":
     """Budget-gated host-LLM refine of a regex-flagged candidate.
@@ -423,6 +499,13 @@ class _WriteSideState:
         # else one candidate turn burns 2 of 3 and a session only gets
         # ~1.5 candidates judged + distilled).
         self._distill_calls_by_session: dict[str, int] = {}
+        # LLM topic-classify face (11-08, owner 方案②): INDEPENDENT
+        # per-session budget pool (same owner/reviewer decision as
+        # judge/distill — a classify call must not burn the judge or
+        # distill slots). Over-budget / no-runtime / any LLM failure ->
+        # the doc keeps its floor topic "general" (fail-soft: the LLM
+        # face is an enhancement, never the only classifier).
+        self._topic_calls_by_session: dict[str, int] = {}
         self._main_runtime: Optional[dict] = None
         # TR-4 task-boundary sink state: bounded per-session raw message
         # history (the "premise" source for the extracted agent docs) +
@@ -690,6 +773,54 @@ class _WriteSideState:
         if verdict.get("model_used"):
             self._distill_calls_by_session[session_id] = used + 1
         return verdict
+
+    def _topic_enabled(self) -> bool:
+        """The LLM topic-classify face is on iff the profile config did
+        not turn it off AND the host call surface is importable
+        (11-08, owner 方案②). Standalone / enable=false -> the floor
+        topic "general" stands (fail-soft floor)."""
+        tcfg = (self.rules().get("llm") or {}).get("topic") or {}
+        if tcfg.get("enable", True) is False:
+            return False
+        return _HOST_CALL_LLM is not None
+
+    def _maybe_llm_topic(self, session_id: str,
+                         doc: dict) -> Optional[str]:
+        """Budget-gated LLM project-topic classification of one built
+        agent-experience doc (11-08, owner 方案②).
+
+        Independent per-session budget pool (``llm.topic.per_session``,
+        default 3, SEPARATE from the judge + distill pools): over-cap /
+        no-runtime / any LLM failure / a reply not in the valid vocab
+        -> returns None (the caller keeps the floor topic "general" —
+        fail-soft: classification is an enhancement, never the only
+        tagger, and must never break the capture/staging path).
+        Returns the chosen valid topic tag, or None.
+        """
+        if not self._topic_enabled():
+            return None
+        # Test hook (mirror of _distill_verdicts): pre-resolved topic
+        # verdicts keyed by session skip the LLM face entirely (the
+        # B4 routing tests' precedent). A falsy value = floor "general".
+        pre = getattr(self, "_topic_verdicts", None)
+        if pre is not None:
+            v = pre.get(session_id)
+            return v if v else None
+        tcfg = (self.rules().get("llm") or {}).get("topic") or {}
+        limit = int(tcfg.get("per_session", 3))
+        used = self._topic_calls_by_session.get(session_id, 0)
+        if limit <= 0 or used >= limit:
+            return None  # over-cap / disabled: floor topic stands, no call
+        rt = self._main_runtime_live()
+        if rt is None:
+            return None  # standalone / no runtime: floor stands
+        from kb_ingest_rules import TOPIC_VOCAB
+        valid = list(TOPIC_VOCAB) + list(_custom_topics())
+        text = f"{doc.get('title', '')}\n{str(doc.get('content', ''))[:1500]}"
+        topic = _llm_topic_classify(rt, text, valid)
+        if topic is not None:
+            self._topic_calls_by_session[session_id] = used + 1
+        return topic
 
     def _stage(self, cand: Candidate, distill_verdict: Optional[dict] = None) -> None:
         """Land the candidate PENDING in the isolated staging store.
@@ -1107,6 +1238,17 @@ class _WriteSideState:
                 doc = self._build_agent_doc(cand, msgs)
                 if doc is None:
                     continue
+                # 11-08 LLM project-topic classify (owner 方案②): after the
+                # doc is built (title + content present), a budget-gated host
+                # LLM pass picks the best topic tag from the valid vocab
+                # (built-in TOPIC_VOCAB + custom_topics.jsonl project tags).
+                # Fail-soft: None (disabled / over-budget / no-runtime / any
+                # LLM failure / out-of-vocab reply) leaves the floor topic
+                # "general" that _build_agent_doc stamped — never a broken
+                # or missing topic. Only a REAL valid tag overrides.
+                llm_topic = self._maybe_llm_topic(prev_session_id, doc)
+                if llm_topic is not None:
+                    doc["topic"] = llm_topic
                 # B4 step ②: LLM distill judges experience/transcript
                 # (the existing verdict path, budget-gated, fail-soft).
                 verdict = None
