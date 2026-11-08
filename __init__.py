@@ -1260,6 +1260,13 @@ def _kb_search_central_handler(args: dict, **kwargs) -> str:
     except Exception as e:
         return json.dumps({"success": False, "error": f"kb_search_central 查询失败: {e}"},
                           ensure_ascii=False)
+    # datetime 兜底: 宿主进程持有的 sm_module 可能是旧模块实例 (没 reload 含 _ts 修复
+    # 的版本), 或某些 PG 驱动路径下 occurred_at/version_ts 原样返回 datetime 对象。
+    # 出口统一默认 json 序列化策略, 任何 timestamptz 字段都过得了 json.dumps。
+    def _json_default(o):
+        if hasattr(o, "isoformat"):
+            return o.isoformat()
+        raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
     out_rows = []
     for r in rows:
         out_rows.append({
@@ -1278,7 +1285,7 @@ def _kb_search_central_handler(args: dict, **kwargs) -> str:
     return json.dumps({"success": True, "query": query,
                        "confirmed_only": confirmed_only,
                        "count": len(out_rows), "results": out_rows},
-                      ensure_ascii=False)
+                      ensure_ascii=False, default=_json_default)
 
 
 def register(ctx):
