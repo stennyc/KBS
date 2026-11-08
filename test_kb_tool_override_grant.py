@@ -81,7 +81,8 @@ class KbToolOverrideGrantTests(unittest.TestCase):
         # A config that can't be parsed YAML must not silently count as granted.
         for path in _PROFILE_CONFIGS:
             try:
-                yaml.safe_load(open(path, encoding="utf-8"))
+                with open(path, encoding="utf-8") as f:
+                    yaml.safe_load(f)
             except yaml.YAMLError as exc:
                 self.fail(f"{path} is not parseable YAML: {exc}")
 
