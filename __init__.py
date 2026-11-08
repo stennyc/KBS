@@ -78,6 +78,13 @@ def _ensure_kb_dep_paths() -> None:
 
 _ensure_kb_dep_paths()
 
+# doc_file URL fetch guards (http/https door, 11-08 P0 fix): a URL passed
+# as doc_file is fetched via urllib with these ceilings. 100KB matches the
+# content length gate upper bound _CONTENT_MAX (kb_service) — fetching
+# more would be wasted since the ingest gate would reject it anyway.
+_DOC_FILE_URL_MAX_BYTES = 100_000
+_DOC_FILE_URL_TIMEOUT_S = 15
+
 # Data dir: the shared host location (created by the deploy step; the
 # service guards loud on absence). Override via KB_DATA_DIR.
 _DATA_DIR = Path(os.environ.get("KB_DATA_DIR", "/root/.hermes/kb-data"))
@@ -300,9 +307,13 @@ INGEST_SCHEMA = {
                         "doc_file": {
                             "type": "string",
                             "description": (
-                                "Optional: an absolute path, or a path relative "
-                                "to the KB data dir, to read 'content' from "
-                                "instead of inlining it. REQUIRED for any doc "
+                                "Optional: an absolute path, a path relative "
+                                "to the KB data dir, OR an http(s) URL, to "
+                                "read 'content' from instead of inlining it. "
+                                "A URL (http:// or https://) is fetched via "
+                                "urllib with a 15s timeout and a 100KB ceiling "
+                                "(UTF-8); a non-UTF-8 or over-cap response is "
+                                "refused structurally. REQUIRED for any doc "
                                 "body > ~1KB or containing quotes/newlines/code "
                                 "blocks (see the tool's Payload discipline "
                                 "note) — it kills multi-layer JSON-escape "
@@ -710,20 +721,48 @@ def _heal_escaped_content(docs: list) -> tuple[list, list]:
 
 
 def _read_doc_file(doc_file: str, data_dir: Path) -> tuple[str | None, str | None]:
-    """B: read a doc's content from a file on disk instead of inlining it.
+    """B: read a doc's content from a file on disk — or from an http(s) URL.
 
-    ``doc_file`` is either an absolute path or a path relative to
-    ``data_dir`` (the KB data dir). The RESOLVED path must stay inside
-    ``data_dir`` — anything escaping the root (``../../etc/passwd``,
-    an absolute path under a sibling dir, a symlink out of the root) is
-    refused. Returns ``(text, None)`` on success, ``(None, error)`` on
-    refusal/read failure.
+    ``doc_file`` is one of:
+      - an http:// or https:// URL -> fetched via urllib (15s timeout,
+        100KB ceiling); on any failure returns (None, error), never
+        silently falls back to a local path. Recognizing the scheme up
+        front is REQUIRED: Path('https://x') is a relative path on POSIX
+        and would be joined under data_dir then refused by the
+        relative_to guard (the 11-08 ingest bug, doc_file
+        '/root/.hermes/https://kb-font-offline.md' resolves outside the
+        KB data dir).
+      - an absolute path, or a path relative to ``data_dir`` -> read from
+        disk. The RESOLVED path must stay inside ``data_dir`` — anything
+        escaping the root (``../../etc/passwd``, an absolute path under a
+        sibling dir, a symlink out of the root) is refused.
 
     Pure I/O — no service state; callers delete the ``doc_file`` key from
     the doc dict BEFORE ingest so the content-addressed docid
     (uuid5 over the whole dict) is identical for the inline-content and
     doc_file-read versions of the same document.
     """
+    stripped = doc_file.strip()
+    low = stripped.lower()
+    if low.startswith("http://") or low.startswith("https://"):
+        import urllib.request
+        req = urllib.request.Request(
+            stripped, headers={"User-Agent": "hermes-kb-ingest/1.0"})
+        try:
+            with urllib.request.urlopen(req,
+                                        timeout=_DOC_FILE_URL_TIMEOUT_S) as resp:
+                body = resp.read(_DOC_FILE_URL_MAX_BYTES + 1)
+        except Exception as exc:  # URLError, HTTPError, timeout, ...
+            return None, f"doc_file URL '{doc_file}' fetch failed: {exc}"
+        if len(body) > _DOC_FILE_URL_MAX_BYTES:
+            return None, (f"doc_file URL '{doc_file}' exceeds "
+                          f"{_DOC_FILE_URL_MAX_BYTES} bytes; refused.")
+        try:
+            return body.decode("utf-8"), None
+        except UnicodeDecodeError:
+            return None, (f"doc_file URL '{doc_file}' is not valid UTF-8; "
+                          f"refused.")
+
     p = Path(doc_file).expanduser()
     if not p.is_absolute():
         p = data_dir / p

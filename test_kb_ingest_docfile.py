@@ -134,6 +134,47 @@ class DocFileTests(unittest.TestCase):
         self.assertIsNone(text)
         self.assertIsNotNone(err)
 
+    # --- P0: URL scheme door (11-08 fix) ---
+    # A doc_file value starting with http:// or https:// must be treated as
+    # a URL to fetch, NOT a local path joined under data_dir (the 11-08 bug:
+    # 'https://kb-font-offline.md' was resolved to a path under the KB data
+    # dir and refused).
+    def test_url_is_not_treated_as_local_path(self):
+        """https://... must never be joined under data_dir and refused as
+        'resolves outside the KB data dir' — that was the 11-08 bug."""
+        text, err = kb._read_doc_file(
+            "https://example.com/kb-font-offline.md", self._data_dir)
+        # Network call: example.com may be unreachable in the test env, so
+        # accept either a fetch failure OR success. The key assertion is that
+        # the error (if any) is a fetch error, NOT a path-resolution error.
+        if err is not None:
+            self.assertIn("fetch failed", err,
+                          msg=f"expected a URL fetch error, got: {err}")
+        # If fetch succeeded, text must be non-None.
+        if text is not None:
+            self.assertIsInstance(text, str)
+
+    def test_http_url_reaches_url_door_not_path_door(self):
+        """http:// (not https) is also routed to the URL door, not the path
+        door. A non-UTF-8 or unreachable URL yields a fetch error; the
+        critical regression check is that we do NOT get a 'resolves outside
+        the KB data dir' path error (that was the pre-fix behaviour)."""
+        text, err = kb._read_doc_file(
+            "http://127.0.0.1:1/never-listening.md", self._data_dir)
+        if err is not None:
+            self.assertNotIn("resolves outside", err,
+                             msg="URL was mis-routed to the local-path door")
+            self.assertIn("fetch failed", err)
+
+    def test_malformed_url_is_still_routed_to_url_door(self):
+        """A syntactically odd URL string that begins with https:// but is
+        not fetchable must still be caught by the URL door (fetch error),
+        not silently turned into a path."""
+        text, err = kb._read_doc_file(
+            "https://", self._data_dir)
+        if err is not None:
+            self.assertIn("fetch failed", err)
+
 
 class IngestHandlerDocFileTests(unittest.TestCase):
     """B: _ingest_handler end-to-end with doc_file (isolated service)."""
