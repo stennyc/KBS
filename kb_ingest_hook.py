@@ -275,6 +275,90 @@ def _llm_topic_classify(main_runtime, text: str,
     return None
 
 
+# ---------------------------------------------------------------------------
+# LLM doc_kind classification (11-08, owner ruling: ingest 自动打标)
+# ---------------------------------------------------------------------------
+
+_DOC_KIND_CLASSIFY_INSTRUCTIONS = (
+    "你是知识库文档形态（doc_kind）分类器。给定一段知识/经验文档的标题与正文，"
+    "判断它最贴切的文档形态，从下列 5 个值中选一个：\n"
+    "- experience：回顾性踩坑/事后复盘（retrospective pitfall / post-mortem）\n"
+    "- tutorial：前瞻性可跟随的操作教程（SOP / runbook / 排查修复指南）\n"
+    "- manual：既有系统的操作手册/参考手册（how-to，非分步教程）\n"
+    "- reference：纯参考事实（无判断、无步骤，如 API 字段约定、契约说明）\n"
+    "- material：教材/书籍类长文（学习材料，非实操）\n"
+    "只输出标签本身（一个单词），不要解释，不要 JSON，不要引号。若都不贴切，输出 none。\n\n"
+)
+
+
+def _llm_doc_kind_classify(main_runtime, text: str,
+                           valid_kinds: list) -> Optional[str]:
+    """Budget-gated host-LLM doc_kind (document-shape) classification of one
+    auto-captured / manually-ingested knowledge unit (11-08, owner ruling:
+    ingest 自动打标, replacing the 2026-10-18 'never pre-assign on the agent
+    capture path' governance note — the label is now an LLM ENHANCEMENT with
+    the SAME fail-soft floor: ANY failure (no main runtime / host down /
+    timeout / unparseable / out-of-vocab reply) returns None, so the doc's
+    doc_kind stays None ("unlabeled") exactly as before. A valid reply OVERRIDES
+    the floor (the only path by which a non-None doc_kind is ever stamped at
+    ingest time; explicit caller-supplied doc_kind keys always win — the
+    caller is responsible for NOT calling this face when the key is set).
+
+    Same host-channel discipline as _llm_topic_classify: explicit
+    main_runtime, no task key, no custom provider; temperature 0.0, tiny
+    max_tokens (the reply is a single tag).
+    """
+    import json as _json
+    import re as _re
+    if _HOST_CALL_LLM is None or not isinstance(main_runtime, dict) \
+            or not main_runtime:
+        return None
+    if not valid_kinds:
+        return None
+    try:
+        user_msg = _DOC_KIND_CLASSIFY_INSTRUCTIONS + \
+                   "知识文本：\n" + text[:2000]
+        route_info: dict = {}
+        response = _HOST_CALL_LLM(
+            main_runtime=main_runtime,
+            messages=[{"role": "user", "content": user_msg}],
+            temperature=0.0,
+            max_tokens=24,
+            timeout=_LLM_JUDGE_TIMEOUT,
+            route_info=route_info,
+        )
+    except Exception as exc:
+        logger.debug("kb LLM doc_kind classify failed (%s); "
+                     "keeping floor doc_kind=None", exc)
+        return None
+    # Extract assistant text (dict- or namespace-shaped response).
+    try:
+        msg = response["choices"][0]["message"] if isinstance(response, dict) \
+            else response.choices[0].message
+        content = msg.get("content") if isinstance(msg, dict) \
+            else getattr(msg, "content", None)
+        if isinstance(content, list):
+            content = "".join(str(p.get("text") if isinstance(p, dict)
+                               else getattr(p, "text", "")) for p in content)
+        text_out = (content or "").strip()
+    except Exception:
+        return None
+    # Strip optional fence + surrounding quotes; take the first token-ish
+    # value (the reply is meant to be a bare tag).
+    m = _re.search(r"```(?:json)?\s*(.+?)```", text_out,
+                   _re.DOTALL | _re.IGNORECASE)
+    raw = m.group(1).strip() if m else text_out
+    raw = raw.strip('"').strip("'").strip()
+    # "none" / out-of-vocab -> None (floor stands). Only an EXACT match
+    # against the valid list (case-insensitive — the LLM may reply
+    # "Tutorial" — matched against the controlled vocab) is accepted.
+    lowered = raw.lower()
+    for k in valid_kinds:
+        if lowered == str(k).lower():
+            return k
+    return None
+
+
 def _llm_judge_candidate(main_runtime, text: str,
                          fallback: "Candidate") -> "Optional[Candidate]":
     """Budget-gated host-LLM refine of a regex-flagged candidate.
@@ -506,6 +590,13 @@ class _WriteSideState:
         # the doc keeps its floor topic "general" (fail-soft: the LLM
         # face is an enhancement, never the only classifier).
         self._topic_calls_by_session: dict[str, int] = {}
+        # LLM doc_kind-classify face (11-08, owner ruling: ingest 自动打标):
+        # INDEPENDENT per-session budget pool (same owner/reviewer decision
+        # as judge/distill/topic — a classify call must not burn the other
+        # pools). Over-budget / no-runtime / any LLM failure -> the doc's
+        # doc_kind stays None ("unlabeled", the pre-change floor; fail-soft:
+        # the LLM face is an enhancement, never the only labeler).
+        self._doc_kind_calls_by_session: dict[str, int] = {}
         self._main_runtime: Optional[dict] = None
         # TR-4 task-boundary sink state: bounded per-session raw message
         # history (the "premise" source for the extracted agent docs) +
@@ -821,6 +912,56 @@ class _WriteSideState:
         if topic is not None:
             self._topic_calls_by_session[session_id] = used + 1
         return topic
+
+    def _doc_kind_enabled(self) -> bool:
+        """The LLM doc_kind-classify face is on iff the profile config did
+        not turn it off AND the host call surface is importable
+        (11-08, owner ruling: ingest 自动打标). Standalone / enable=false
+        -> doc_kind=None (the "unlabeled" floor) stands (fail-soft)."""
+        dcfg = (self.rules().get("llm") or {}).get("doc_kind") or {}
+        if dcfg.get("enable", True) is False:
+            return False
+        return _HOST_CALL_LLM is not None
+
+    def _maybe_llm_doc_kind(self, session_id: str,
+                            doc: dict) -> Optional[str]:
+        """Budget-gated LLM doc_kind (document-shape) classification of one
+        built agent-experience doc (11-08, owner ruling: ingest 自动打标,
+        replacing the 2026-10-18 'never pre-assign on the agent capture
+        path' governance note).
+
+        Independent per-session budget pool (``llm.doc_kind.per_session``,
+        default 3, SEPARATE from the judge + distill + topic pools):
+        over-cap / no-runtime / any LLM failure / a reply not in the valid
+        vocab -> returns None (the doc's doc_kind stays None, "unlabeled"
+        — exactly the pre-change behavior; fail-soft: classification is an
+        enhancement, never the only labeler, and must never break the
+        capture/staging path). Returns the chosen valid doc_kind, or None.
+        """
+        if not self._doc_kind_enabled():
+            return None
+        # Test hook (mirror of _topic_verdicts): pre-resolved doc_kind
+        # verdicts keyed by session skip the LLM face entirely (the
+        # B4 routing tests' precedent). A falsy value = floor None.
+        pre = getattr(self, "_doc_kind_verdicts", None)
+        if pre is not None:
+            v = pre.get(session_id)
+            return v if v else None
+        dcfg = (self.rules().get("llm") or {}).get("doc_kind") or {}
+        limit = int(dcfg.get("per_session", 3))
+        used = self._doc_kind_calls_by_session.get(session_id, 0)
+        if limit <= 0 or used >= limit:
+            return None  # over-cap / disabled: floor doc_kind=None stands, no call
+        rt = self._main_runtime_live()
+        if rt is None:
+            return None  # standalone / no runtime: floor stands
+        from kb_ingest_rules import DOC_KIND_VOCAB
+        valid = list(DOC_KIND_VOCAB)
+        text = f"{doc.get('title', '')}\n{str(doc.get('content', ''))[:1500]}"
+        kind = _llm_doc_kind_classify(rt, text, valid)
+        if kind is not None:
+            self._doc_kind_calls_by_session[session_id] = used + 1
+        return kind
 
     def _stage(self, cand: Candidate, distill_verdict: Optional[dict] = None) -> None:
         """Land the candidate PENDING in the isolated staging store.
@@ -1166,14 +1307,18 @@ class _WriteSideState:
         # omits the key entirely.
         if kb_tier == "archive" and cand.project_ref:
             doc["project_ref"] = cand.project_ref
-        # owner 2026-10-19: agent auto-captured docs NEVER carry a
-        # doc_kind label at capture time (the key is deliberately absent
-        # here — _normalize_docs then setdefaults doc_kind=None, so
-        # B1-None-filter stable). Labeling a doc_kind is the owner's
-        # EXPLICIT action (knowledge_base_set_doc_kind / a user ingest
-        # with doc_kind set = user-specified, no review gate); the agent
-        # capture path must not pre-assign it (owner review scope,
-        # TR-9 follow-up).
+        # owner 2026-10-19 (superseded by owner ruling 11-08: ingest 自动打标):
+        # agent auto-captured docs NEVER carry a doc_kind label at _build
+        # time (the key is deliberately absent here — _normalize_docs then
+        # setdefaults doc_kind=None, so B1-None-filter stable). The doc_kind
+        # label is now stamped by the LLM write-side face in
+        # close_task_boundary (self._maybe_llm_doc_kind) AFTER the doc is
+        # built (11-08, owner ruling: ingest 自动打标, replacing the
+        # 2026-10-18 'never pre-assign on the agent capture path' governance
+        # note — the label is now an LLM ENHANCEMENT with the SAME fail-soft
+        # floor: doc_kind stays None on any LLM face failure).
+        # An explicit caller-supplied doc_kind (a user ingest with
+        # doc_kind set) still lands as-is — no review gate.
         if not (5 <= len(doc["title"]) <= 200):
             doc["title"] = (doc["title"][:5] + "…") if doc["title"] \
                 else "agent 经验条目"
@@ -1249,6 +1394,22 @@ class _WriteSideState:
                 llm_topic = self._maybe_llm_topic(prev_session_id, doc)
                 if llm_topic is not None:
                     doc["topic"] = llm_topic
+                # 11-08 LLM doc_kind classify (owner ruling: ingest 自动打标,
+                # replacing the 2026-10-18 'never pre-assign on the agent
+                # capture path' governance note): after the doc is built
+                # (title + content present), a budget-gated host LLM pass
+                # picks the best doc_kind tag from the controlled vocab
+                # (DOC_KIND_VOCAB: experience/tutorial/manual/reference/
+                # material). Fail-soft: None (disabled / over-budget /
+                # no-runtime / any LLM failure / out-of-vocab reply) leaves
+                # the floor doc_kind=None that _normalize_docs stamps —
+                # never a broken or missing label; the doc lands confirmed
+                # with doc_kind=None (the pre-change behavior) when the LLM
+                # face does not produce a valid tag. Only a REAL valid tag
+                # overrides the floor.
+                llm_doc_kind = self._maybe_llm_doc_kind(prev_session_id, doc)
+                if llm_doc_kind is not None:
+                    doc["doc_kind"] = llm_doc_kind
                 # B4 step ②: LLM distill judges experience/transcript
                 # (the existing verdict path, budget-gated, fail-soft).
                 verdict = None
@@ -1265,7 +1426,17 @@ class _WriteSideState:
                     rt = None
                     if limit > 0 and used < limit:
                         rt = self._main_runtime_live()
-                    if rt is not None:
+                    # truthy guard (NOT `is not None`): the host's
+                    # _norm_main_runtime can cache a FALSY empty dict
+                    # (no-context snapshot) — that is "no usable runtime"
+                    # for the distill LLM face and must NOT trigger a
+                    # no_runtime verdict (a no_runtime verdict + empty
+                    # regex anchors = a false transcript_drop of a
+                    # perfectly good doc, the 11-08 _main_runtime_live
+                    # falsy-cache interaction the owner flagged). An
+                    # empty dict therefore stands as the fail-soft
+                    # original-content path, same as a None runtime.
+                    if rt:
                         verdict = _distill_content(rt, doc["title"],
                                                    doc["content"])
                         if verdict.get("model_used"):

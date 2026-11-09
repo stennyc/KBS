@@ -245,14 +245,26 @@ def _normalize_docs(docs: list[dict]) -> list[dict]:
         # the payload (experience/archive are docid-meaningful).
         d.setdefault("gov_tier", None)
         # doc_kind (orthogonal document-SHAP axis, PRD 2026-10-18 owner-
-        # agreed): NOT back-filled — a doc that omits doc_kind stays
-        # doc_kind=None ("unlabeled", NOT implicitly "experience"). The
-        # default MUST be None (never "experience"): the B1 None-filter
+        # agreed; superseded on the "never back-fill" point by owner
+        # ruling 11-08: ingest 自动打标): the default MUST be None
+        # (never "experience"): the B1 None-filter
         # keeps a None-valued key out of the docid payload, so
         # doc_kind=None (absent) and doc_kind key-absent hash byte-
         # identically for all legacy docs (the gov_tier precedent, one
         # line up — a non-None default would re-mint every existing
         # docid and sever the reinforce/ingest_ts/graph sidecar links).
+        # A NON-None doc_kind is only ever stamped BEFORE this setdefault
+        # (svc.ingest / _normalize_docs receives the doc dict already
+        # carrying the key — either caller-supplied explicitly, or by the
+        # LLM write-side auto-classify faces: kb_ingest_hook's
+        # _maybe_llm_doc_kind (agent-capture path, close_task_boundary)
+        # and the manual-ingest tool face in this plugin's __init__.py
+        # (owner ruling 11-08: ingest 自动打标, replacing the 2026-10-18
+        # 'never pre-assign on the agent capture path' governance note).
+        # The setdefault here stays the UNLABELED FLOOR: any doc that
+        # reached normalize without a doc_kind key (e.g. standalone /
+        # no-LLM-runtime ingest where every auto-classify face returned
+        # None) keeps doc_kind=None — never implicitly "experience".
         d.setdefault("doc_kind", None)
         out.append(d)
     return out

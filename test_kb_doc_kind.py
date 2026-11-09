@@ -289,6 +289,77 @@ class DocKindCorpusRegressionTests(unittest.TestCase):
         self.assertGreaterEqual(n, 0)
 
 
+class LlmDocKindAutoLabelTests(unittest.TestCase):
+    """11-08 owner ruling: ingest 自动打标 — agent-capture path
+    (close_task_boundary) LLM doc_kind auto-classify face.
+
+    通过 `_doc_kind_verdicts` 测试钩子（mirror of `_topic_verdicts`）
+    钉死行为，不碰真实 host LLM：
+      1. pinned verdict "tutorial" -> staged doc carries doc_kind="tutorial"
+      2. pinned verdict None      -> doc stays unlabeled (doc_kind key
+         absent, the pre-change floor; B1-None-filter stable)
+      3. the falsy-runtime guard: a cached empty-dict `_main_runtime`
+         must NOT route through the distill no_runtime path (the
+         11-08 transcript_drop regression this face exposed).
+    """
+    def _state(self, fake_svc, cand, doc_kind_verdicts=None):
+        from test_kb_llm_topic import _make_state
+        st = _make_state()
+        st._service_override = fake_svc
+        st._pending_override = [cand]
+        if doc_kind_verdicts is not None:
+            st._doc_kind_verdicts = doc_kind_verdicts
+        # distill face pinned OFF so the no_runtime guard branch is the
+        # ONLY variable under test (mirrors the _topic_verdicts pin in
+        # test_kb_llm_topic's TaskBoundaryTopicIntegrationTests).
+        st._distill_verdicts = None
+        return st
+
+    def _cand(self):
+        from test_kb_phase4_tr9 import _incident_cand
+        return _incident_cand(
+            "uuid-dk-1", "9200 修复", "hermes-ui-repo 9200 attach 修复经验",
+            "coder", "s-dk")
+
+    def _fake_svc(self):
+        from test_kb_phase4_tr9 import _FakeService
+        return _FakeService(
+            confirm_results=lambda *a, **k: {"status": "success"})
+
+    def test_pinned_tutorial_lands_on_doc(self):
+        cand = self._cand()
+        fake = self._fake_svc()
+        st = self._state(fake, cand, {"s-dk": "tutorial"})
+        st.close_task_boundary("s-dk")
+        self.assertEqual(len(fake.ingested), 1)
+        self.assertEqual(fake.ingested[0].get("doc_kind"), "tutorial")
+
+    def test_pinned_none_stays_unlabeled_floor(self):
+        cand = self._cand()
+        fake = self._fake_svc()
+        st = self._state(fake, cand, {"s-dk": None})
+        st.close_task_boundary("s-dk")
+        self.assertEqual(len(fake.ingested), 1)
+        # floor: the key stays ABSENT (doc_kind=None via _normalize_docs
+        # setdefault, B1-None-filter stable — never implicitly "experience")
+        self.assertNotIn("doc_kind", fake.ingested[0])
+
+    def test_no_doc_kind_verdicts_key_is_a_noop_floor(self):
+        # No _doc_kind_verdicts hook at all (production path, no host
+        # runtime in this sandbox) -> the face returns None -> floor
+        # stands; the doc is STILL ingested (no transcript_drop, the
+        # falsy-runtime guard holds).
+        cand = self._cand()
+        fake = self._fake_svc()
+        st = self._state(fake, cand)  # no _doc_kind_verdicts set
+        st.close_task_boundary("s-dk")
+        self.assertEqual(len(fake.ingested), 1,
+                         "the falsy-runtime guard must keep the doc on the "
+                         "fail-soft original-content path (no false "
+                         "transcript_drop)")
+        self.assertNotIn("doc_kind", fake.ingested[0])
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()

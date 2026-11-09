@@ -856,9 +856,11 @@ def _ingest_handler(args: dict, **kwargs) -> str:
     # that DID carry an explicit topic is NEVER overridden (explicit
     # user/agent input wins; the LLM face only fills the gap).
     topic_notes: list = []
-    from kb_ingest_rules import TOPIC_VOCAB
-    from kb_ingest_hook import _llm_topic_classify, _custom_topics
+    from kb_ingest_rules import TOPIC_VOCAB, DOC_KIND_VOCAB
+    from kb_ingest_hook import _llm_topic_classify, _custom_topics, \
+        _llm_doc_kind_classify
     _TOPIC_AUTO_LIMIT = 3
+    _DOC_KIND_AUTO_LIMIT = 3
     valid_topics = list(TOPIC_VOCAB) + list(_custom_topics())
     # A main_runtime snapshot is only available in a host-driven process;
     # a standalone / no-host call gets None -> every auto-classify is a
@@ -872,24 +874,51 @@ def _ingest_handler(args: dict, **kwargs) -> str:
     except Exception:
         main_runtime = None
     topic_calls = 0
+    doc_kind_calls = 0
     for doc in resolved_docs:
         if not isinstance(doc, dict):
             continue
-        explicit = str(doc.get("topic") or "").strip()
-        if explicit:
-            continue  # explicit topic wins — the LLM face never overrides it
-        if main_runtime is None or topic_calls >= _TOPIC_AUTO_LIMIT:
-            continue  # no host / over-budget: floor stands, no call
         title = str(doc.get("title") or "").strip()
         body = str(doc.get("content") or "")[:1500]
-        picked = _llm_topic_classify(
-            main_runtime, f"{title}\n{body}", valid_topics)
-        topic_calls += 1
-        if picked:
-            doc["topic"] = picked
-            topic_notes.append(
-                f"topic auto-classified to '{picked}' for "
-                f"'{title[:50]}' (LLM write-side face)")
+        # 11-08 topic LLM auto-classify: for each doc that does NOT
+        # explicitly carry a topic, ask the host main-model to pick the
+        # best topic tag (the LLM face only fills the gap; a doc that
+        # DID carry an explicit topic is NEVER overridden).
+        explicit = str(doc.get("topic") or "").strip()
+        if not explicit and main_runtime is not None \
+                and topic_calls < _TOPIC_AUTO_LIMIT:
+            picked = _llm_topic_classify(
+                main_runtime, f"{title}\n{body}", valid_topics)
+            topic_calls += 1
+            if picked:
+                doc["topic"] = picked
+                topic_notes.append(
+                    f"topic auto-classified to '{picked}' for "
+                    f"'{title[:50]}' (LLM write-side face)")
+        # 11-08 doc_kind LLM auto-classify (owner ruling: ingest 自动打标):
+        # for each doc that does NOT explicitly carry a doc_kind, ask the
+        # host main-model to pick the best document-shape tag from the
+        # controlled DOC_KIND_VOCAB (experience/tutorial/manual/
+        # reference/material). Budget: _DOC_KIND_AUTO_LIMIT LLM calls per
+        # tool_call (separate from the topic pool so one large batch
+        # cannot burn both faces' budgets). Any failure (no host runtime,
+        # host down, timeout, unparseable / out-of-vocab reply,
+        # over-budget) leaves the doc's doc_kind UNTOUCHED — the floor
+        # None ("unlabeled") that svc.ingest's _normalize_docs stamps when
+        # the key is absent stands. A doc that DID carry an explicit
+        # doc_kind is NEVER overridden (explicit user/agent input wins;
+        # the LLM face only fills the gap).
+        explicit_kind = str(doc.get("doc_kind") or "").strip()
+        if not explicit_kind and main_runtime is not None \
+                and doc_kind_calls < _DOC_KIND_AUTO_LIMIT:
+            picked_kind = _llm_doc_kind_classify(
+                main_runtime, f"{title}\n{body}", list(DOC_KIND_VOCAB))
+            doc_kind_calls += 1
+            if picked_kind:
+                doc["doc_kind"] = picked_kind
+                topic_notes.append(
+                    f"doc_kind auto-classified to '{picked_kind}' for "
+                    f"'{title[:50]}' (LLM write-side face)")
 
     result = svc.ingest(resolved_docs)
     svc.persist()  # make ingested docs durable across process restarts
