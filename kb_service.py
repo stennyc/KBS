@@ -1357,6 +1357,81 @@ class KbSearchService:
         finally:
             self._close_lock(fd)
 
+    def drop(self, doc_id: str, confirmed_by: Optional[str] = None,
+             reason: Optional[str] = None) -> dict:
+        """Physically remove a CONFIRMED doc from the hot + cold corpus.
+
+        This is the ONLY deletion path in the service face: every other
+        lifecycle operation (supersede / reinstate / set_*) mutates a row
+        in place and keeps the docid on disk (留盘可查). ``drop`` actually
+        removes the row — the docid disappears from hot_corpus.pkl AND the
+        cold store, so a later cross-process rebase (union-merge) cannot
+        resurrect it.
+
+        Durability is what makes this different from an in-memory filter:
+        the removal happens under the EX data-dir lock, AFTER _rebase()
+        (so any doc another process settled while we held the corpus is
+        already merged in first), then the docid is stripped from BOTH
+        layer snapshots and written back via _flush() (hot.persist +
+        cold.persist + the write-epoch seq bump). Without the _flush, the
+        removal would live only in this process's memory and the union
+        merge of the next rebase would resurrect the on-disk row.
+
+        A doc that is not found (already dropped / never confirmed) is a
+        recorded no-op success — idempotent, like reinstate.
+        """
+        fd = self._open_lock(exclusive=True)
+        try:
+            self._rebase()  # merge on-disk corpora first (EX held)
+            # Locate the doc WITHOUT re-locking: _find_doc_by_id opens its
+            # own SH lock (non-reentrant data-dir flock) and would deadlock
+            # against the EX lock this section already holds. Read the layer
+            # snapshots directly (same invariant: a doc lives in exactly one
+            # layer at a time, first hit wins).
+            target = str(doc_id)
+            found = None
+            for layer in (self._hot, self._cold):
+                for d in layer.docs_snapshot():
+                    if str(d.get("docid")) == target:
+                        found = d
+                        break
+                if found is not None:
+                    break
+            if found is None:
+                # Idempotent: already absent (or was never a confirmed row).
+                self._audit(action="drop", doc_id=doc_id,
+                             confirmed_by=confirmed_by, reason=reason,
+                             already_absent=True)
+                return {"status": "success", "doc_id": doc_id,
+                        "already_absent": True}
+            # Strip the docid from BOTH layers. _replace_confirmed_in_place
+            # is in-place-only (byte-stable docid set) and cannot remove, so
+            # rebuild each layer's snapshot without this docid and replace.
+            hot_docs = self._hot.docs_snapshot()
+            cold_docs = self._cold.docs_snapshot()
+            hot_filtered = [d for d in hot_docs
+                             if str(d.get("docid")) != target]
+            cold_filtered = [d for d in cold_docs
+                             if str(d.get("docid")) != target]
+            removed_from = []
+            if len(hot_filtered) != len(hot_docs):
+                self._hot.replace(hot_filtered, self._hot.generation)
+                removed_from.append("hot")
+            if len(cold_filtered) != len(cold_docs):
+                self._cold.replace(cold_filtered, self._cold.generation)
+                removed_from.append("cold")
+            self._flush()  # durable: hot + cold + seq epoch
+            self._audit(action="drop", doc_id=doc_id,
+                        confirmed_by=confirmed_by, reason=reason,
+                        removed_from=removed_from,
+                        title=found.get("title"))
+            logger.info("drop doc_id=%s by=%r removed_from=%s",
+                        doc_id, confirmed_by, removed_from)
+            return {"status": "success", "doc_id": doc_id,
+                    "removed_from": removed_from}
+        finally:
+            self._close_lock(fd)
+
     def set_doc_kind(self, doc_id: str,
                      new_doc_kind: Optional[str]) -> dict:
         """Re-label a CONFIRMED doc's ``doc_kind`` IN PLACE (same docid,
