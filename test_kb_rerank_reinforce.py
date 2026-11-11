@@ -793,11 +793,15 @@ def test_graphstore_seven_process_no_clobber(tmp_path):
     data_dir.mkdir()
 
     # A subprocess script (a plain string, % -formatted — no nested
-    # f-string). Each worker ingests 3 distinct docs.
+    # f-string). Each worker ingests 3 distinct docs. The plugin-dir path
+    # for the worker's sys.path.insert is derived from THIS test module's
+    # own location (_PLUGIN_DIR, defined at module top) — NOT a hardcoded
+    # absolute string — so the test survives any relocation of the repo
+    # (e.g. re-venv migrations that also move the working copy).
     worker = """
 import sys
 from pathlib import Path
-sys.path.insert(0, '/root/.hermes/plugins/knowledge-base-search')
+sys.path.insert(0, __PLUGIN_DIR__)
 from kb_service import KbSearchService
 svc = KbSearchService(Path(__DATA_DIR__))
 which = int(sys.argv[1])
@@ -806,12 +810,18 @@ docs = [{"docid": "w%d_%d" % (which, i), "title": "process %d topic %d" % (which
         "status": "confirmed"} for i in range(3)]
 svc.ingest(docs)
 print("ok")
-""".replace("__DATA_DIR__", repr(str(data_dir)))
+""".replace("__DATA_DIR__", repr(str(data_dir))).replace("__PLUGIN_DIR__", repr(str(_PLUGIN_DIR)))
     # 7 distinct processes, run sequentially-ish but each opens a fresh
     # service on the same data dir (the flock serializes their write
-    # cycles — including the graph rebuild).
+    # cycles — including the graph rebuild). The interpreter is
+    # sys.executable (the very interpreter running THIS test, guaranteed
+    # to exist and to already have kb_service's import path set up — see
+    # the sys.path.insert at module top) instead of a hardcoded venv path
+    # that can silently rot out under a re-venv migration (root cause of
+    # the 2026-11-11 flaky: /root/.hermes/plugin-venv no longer exists on
+    # this host; the real venv lives under /root/.hermes/installs/.../venv/).
     procs = [subprocess.Popen(
-        ["/root/.hermes/plugin-venv/bin/python", "-c", worker, str(i)],
+        [sys.executable, "-c", worker, str(i)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         for i in range(7)]
     outputs = [p.wait() for p in procs]
