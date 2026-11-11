@@ -28,7 +28,7 @@ Red lines honored (none touched by this phase):
   - kb_rerank.py rrf kernel (TR-6's line — zero diff here).
 
 Run: PYTHONPATH=/root/.hermes/plugins/knowledge-base-search \
-     /root/.hermes/plugin-venv/bin/python -m pytest test_kb_phase3_tr3.py -q
+     python3 -m pytest test_kb_phase3_tr3.py -q
 """
 import json
 import sys

@@ -42,7 +42,7 @@ profile_mismatch hard gate (L594-603 semantics reused, not re-built);
 the _deterministic_docid (uuid5) mechanism itself.
 
 Run: PYTHONPATH=/root/.hermes/plugins/knowledge-base-search \
-     /root/.hermes/plugin-venv/bin/python -m pytest test_kb_phase4_tr10.py -q
+     python3 -m pytest test_kb_phase4_tr10.py -q
 """
 import json
 import os

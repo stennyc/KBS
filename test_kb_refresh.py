@@ -9,7 +9,7 @@
   - 返回 {status, hot_gen, cold_gen, staging_gen}（可观测面，无数据体）
 
 Run:
-  /root/.hermes/plugin-venv/bin/python -m pytest test_kb_refresh.py -v
+  python3 -m pytest test_kb_refresh.py -v
 """
 
 import multiprocessing

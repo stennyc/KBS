@@ -8,7 +8,7 @@ Step 4: owner-review scope — user-specified doc_kind lands as-is (no
 review gate); agent auto-captured docs default to doc_kind=None and get
 labeled only via the explicit set_doc_kind face.
 
-Run: /root/.hermes/plugin-venv/bin/python -m pytest test_kb_governance_2026.py
+Run: python3 -m pytest test_kb_governance_2026.py
 """
 
 import sys

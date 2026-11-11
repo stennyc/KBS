@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Unit tests for the knowledge-base-search write side.
 
-Run:  /root/.hermes/plugin-venv/bin/pytest test_kb_ingest_rules.py -v
-      /root/.hermes/plugin-venv/bin/pytest test_kb_ingest_hook.py -v
+Run:  python3 -m pytest test_kb_ingest_rules.py -v
+      python3 -m pytest test_kb_ingest_hook.py -v
 
 Covers the room's acceptance criteria:
   - rule engine: 3 narrow classes, min_cue_hits, per-rule classification

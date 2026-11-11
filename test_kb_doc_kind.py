@@ -18,7 +18,7 @@ PRD 不变式（每条测试锚定一条）：
      （无 doc_kind 参数，agent 分区查询与改动前字节等价）
 
 运行方式（同目录其他 test_*.py 的约定）：
-  /root/.hermes/plugin-venv/bin/python -m pytest test_kb_doc_kind.py -v
+  python3 -m pytest test_kb_doc_kind.py -v
 """
 
 import json
@@ -228,7 +228,7 @@ class DocKindTopicSearchRegressionTests(unittest.TestCase):
 #   公式重算的 docid 必须字节相同（B1 None-filter 兜底）。
 # 这是本次改动能保证的唯一正确不变式；用它做全量扫描。
 #
-#   /root/.hermes/plugin-venv/bin/python test_kb_doc_kind.py --regression \
+#   python3 test_kb_doc_kind.py --regression \
 #       --data-dir /root/.hermes/kb-data
 # ---------------------------------------------------------------------------
 

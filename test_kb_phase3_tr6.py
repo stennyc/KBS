@@ -34,7 +34,7 @@ no network. Run from the knowledge-base root (the service-boundary
 tests import kb_service — PYTHONPATH must point at the ACTIVE tree so
 the service under test is the one this branch modified):
   cd <knowledge-base> && \
-  PYTHONPATH=$(pwd) /root/.hermes/plugin-venv/bin/python -m pytest \
+  PYTHONPATH=$(pwd) python3 -m pytest \
       plugin/knowledge-base-search/test_kb_phase3_tr6.py -q
 """
 import math

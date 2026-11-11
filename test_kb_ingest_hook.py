@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Behavior tests for the knowledge-base write-side hook layer.
 
-Run:  /root/.hermes/plugin-venv/bin/pytest test_kb_ingest_hook.py -v
+Run:  python3 -m pytest test_kb_ingest_hook.py -v
 
 Proves the wiring end-to-end WITHOUT a live LLM:
   - a post_llm_call turn that matches a rule lands the candidate PENDING

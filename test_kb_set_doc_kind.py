@@ -18,7 +18,7 @@ Design (mirrors set_premise_status's proven in-place pattern):
     containment near-dup gate (which runs only on ingest()'s content
     path) is never consulted — this is the whole point.
 
-Run: /root/.hermes/plugin-venv/bin/python -m pytest test_kb_set_doc_kind.py -v
+Run: python3 -m pytest test_kb_set_doc_kind.py -v
 """
 
 import json
@@ -28,7 +28,6 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.append("/root/.hermes/plugin-venv/lib/python3.14/site-packages")
 
 from kb_service import KbSearchService  # noqa: E402
 from kb_ingest_rules import DOC_KIND_VOCAB  # noqa: E402

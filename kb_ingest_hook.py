@@ -888,15 +888,21 @@ class _WriteSideState:
         tagger, and must never break the capture/staging path).
         Returns the chosen valid topic tag, or None.
         """
-        if not self._topic_enabled():
-            return None
         # Test hook (mirror of _distill_verdicts): pre-resolved topic
         # verdicts keyed by session skip the LLM face entirely (the
-        # B4 routing tests' precedent). A falsy value = floor "general".
+        # B4 routing tests' precedent). Checked BEFORE the _topic_enabled()
+        # gate: a pinned verdict is a pre-resolved, host-independent
+        # classification — it must not be swallowed just because this
+        # process happens to lack a live _HOST_CALL_LLM surface (the 3
+        # 2026-11-11 pre-existing red tests: pinned verdicts used to be
+        # unreachable whenever the standalone/test interpreter had no
+        # host LLM import). A falsy value = floor "general".
         pre = getattr(self, "_topic_verdicts", None)
         if pre is not None:
             v = pre.get(session_id)
             return v if v else None
+        if not self._topic_enabled():
+            return None
         tcfg = (self.rules().get("llm") or {}).get("topic") or {}
         limit = int(tcfg.get("per_session", 3))
         used = self._topic_calls_by_session.get(session_id, 0)
@@ -938,15 +944,20 @@ class _WriteSideState:
         enhancement, never the only labeler, and must never break the
         capture/staging path). Returns the chosen valid doc_kind, or None.
         """
-        if not self._doc_kind_enabled():
-            return None
         # Test hook (mirror of _topic_verdicts): pre-resolved doc_kind
         # verdicts keyed by session skip the LLM face entirely (the
-        # B4 routing tests' precedent). A falsy value = floor None.
+        # B4 routing tests' precedent). Checked BEFORE the
+        # _doc_kind_enabled() gate: a pinned verdict is a pre-resolved,
+        # host-independent classification — it must not be swallowed
+        # just because this process happens to lack a live
+        # _HOST_CALL_LLM surface (same fix as _maybe_llm_topic, 2026-11-11).
+        # A falsy value = floor None.
         pre = getattr(self, "_doc_kind_verdicts", None)
         if pre is not None:
             v = pre.get(session_id)
             return v if v else None
+        if not self._doc_kind_enabled():
+            return None
         dcfg = (self.rules().get("llm") or {}).get("doc_kind") or {}
         limit = int(dcfg.get("per_session", 3))
         used = self._doc_kind_calls_by_session.get(session_id, 0)

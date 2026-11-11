@@ -12,7 +12,7 @@ boundary markers. The FACT (the pending doc rows themselves) stays in
 staging_docs.jsonl — the single source of truth.
 
 Run:
-  /root/.hermes/plugin-venv/bin/python -m pytest test_clarify_state_persist.py -v
+  python3 -m pytest test_clarify_state_persist.py -v
 or the bare-python shape:
   KB_DATA_DIR=<tmp> python3 test_clarify_state_persist.py
 """

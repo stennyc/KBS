@@ -70,7 +70,7 @@ Covers the 11 delivery items' Phase A portion:
         project_ref/gov_tier keys, and re-align the sidecar.
 
 Run: PYTHONPATH=<plugin-venv site-packages>:<plugin dir> \
-     /root/.hermes/plugin-venv/bin/python -m pytest \
+     python3 -m pytest \
      test_kb_governance_phase_a.py -q
 """
 
@@ -1354,9 +1354,12 @@ def _run_migration(kb_data: Path, rollback: bool = False) -> str:
     import subprocess
     import os
     env = dict(os.environ)
-    env["PYTHONPATH"] = (str(PLUGIN_DIR) + os.pathsep +
-                         "/root/.hermes/plugin-venv/lib/python3.14/site-packages")
-    cmd = ["/root/.hermes/plugin-venv/bin/python", str(_MIGRATOR),
+    # No PYTHONPATH splice needed: the migrator is pure file I/O, no
+    # third-party import (verified: only stdlib imports). The interpreter
+    # is sys.executable (whatever python is running THIS test — the same
+    # venv the test itself was launched under), NOT a hardcoded venv
+    # path that silently rots out under a re-venv migration.
+    cmd = [sys.executable, str(_MIGRATOR),
            str(kb_data)]
     if rollback:
         cmd.append("--rollback")

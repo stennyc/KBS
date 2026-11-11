@@ -9,7 +9,7 @@ TR-8: _search_handler injects source_profile=<caller> when the caller
      has no explicit source_profile filter; explicit source_profile=None
      is the intentional cross-profile opt-in (R-7).
 
-Run: /root/.hermes/plugin-venv/bin/python -m pytest test_kb_agent_experience.py -q
+Run: python3 -m pytest test_kb_agent_experience.py -q
 (needs the shared plugin venv on PYTHONPATH for rank_bm25 + jieba)
 """
 

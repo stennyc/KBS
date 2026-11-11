@@ -21,7 +21,7 @@ TR-4: the task-boundary sink (session-switch trigger, reused from the
      staging + an agent_confirm_skipped audit record.
 
 Run: PYTHONPATH=/root/.hermes/plugins/knowledge-base-search \
-     /root/.hermes/plugin-venv/bin/python -m pytest test_kb_phase2.py -q
+     python3 -m pytest test_kb_phase2.py -q
 """
 import json
 import pickle

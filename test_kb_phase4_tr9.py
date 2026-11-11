@@ -34,7 +34,7 @@ Coverage (4 KPI tests, matching the task spec):
       (agent_confirm_skipped), shared backstop path (not a new mechanism).
 
 Run: PYTHONPATH=/root/.hermes/plugins/knowledge-base-search \
-     /root/.hermes/plugin-venv/bin/python -m pytest test_kb_phase4_tr9.py -q
+     python3 -m pytest test_kb_phase4_tr9.py -q
 """
 import json
 import sys
