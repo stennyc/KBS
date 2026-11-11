@@ -15,7 +15,6 @@ No model, no external API — local rank_bm25 only (PRD §1).
 from __future__ import annotations
 
 import glob
-import importlib.util
 import json
 import logging
 import os
@@ -62,18 +61,12 @@ from handler_args import _normalize_handler_args
 def _ensure_kb_dep_paths() -> None:
     """Make rank_bm25 + jieba importable from the running interpreter.
 
-    If it already sees both, do nothing. Otherwise append the shared
-    plugin-venv site-packages dir (overridable via KB_PY_SITE). Rollback-safe:
-    deleting this block + the call restores prior host-only behaviour.
-    """
-    if importlib.util.find_spec("rank_bm25") and importlib.util.find_spec("jieba"):
-        return
-    site = os.environ.get(
-        "KB_PY_SITE",
-        "/root/.hermes/plugin-venv/lib/python3.14/site-packages",
-    )
-    if os.path.isdir(site) and site not in sys.path:
-        sys.path.append(site)
+    Superseded by dep_bootstrap.ensure_kb_dep_paths (shared single source of
+    truth, 2026-11-11) — kept as a thin re-export wrapper so any existing
+    caller/referencer of this exact name still resolves; the actual splice
+    logic now lives in dep_bootstrap."""
+    import dep_bootstrap
+    dep_bootstrap.ensure_kb_dep_paths()
 
 
 _ensure_kb_dep_paths()

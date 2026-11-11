@@ -815,11 +815,14 @@ print("ok")
     # service on the same data dir (the flock serializes their write
     # cycles — including the graph rebuild). The interpreter is
     # sys.executable (the very interpreter running THIS test, guaranteed
-    # to exist and to already have kb_service's import path set up — see
-    # the sys.path.insert at module top) instead of a hardcoded venv path
-    # that can silently rot out under a re-venv migration (root cause of
-    # the 2026-11-11 flaky: /root/.hermes/plugin-venv no longer exists on
-    # this host; the real venv lives under /root/.hermes/installs/.../venv/).
+    # to exist) instead of a hardcoded venv path. The subprocess worker
+    # itself does NOT need to know where the shared dev-venv site-packages
+    # dir lives — importing kb_service now triggers dep_bootstrap, which
+    # splices that dir onto sys.path automatically (the actual fix for the
+    # 2026-11-11 flaky: the root cause was the worker face bypassing the
+    # package __init__'s _ensure_kb_dep_paths self-bootstrap, not a missing
+    # venv path; rank_bm25/jieba were always present, just never spliced
+    # onto sys.path for a bare `from kb_service import ...`).
     procs = [subprocess.Popen(
         [sys.executable, "-c", worker, str(i)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

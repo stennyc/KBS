@@ -47,6 +47,17 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Splice the shared dev-venv site-packages dir onto sys.path BEFORE any
+# sibling import below — kb_service's transitive third-party imports
+# (rank_bm25 via hot_layer, jieba, psycopg2 via kb_shared_memory) don't
+# exist in every host interpreter, and this makes the splice a guaranteed
+# side effect of importing kb_service itself, regardless of which face
+# (host in-process, test subprocess worker, future caller) imports it.
+# No-op when the host already resolves both packages.
+import dep_bootstrap
+
+dep_bootstrap.ensure_kb_dep_paths()
+
 from hot_layer import HotLayerBackend
 from cold_layer import PyterrierBackend
 from two_layer import TwoLayerBackend

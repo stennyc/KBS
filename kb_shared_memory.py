@@ -236,20 +236,14 @@ def _parse_kb_shared_memory_minimal(raw: str) -> Dict[str, Any]:
 
 
 def _ensure_pg_dep_paths() -> None:
-    """Make psycopg2 importable from the running interpreter (mirror filemem's
-    _ensure_pg_dep_paths). psycopg2 lives in the shared plugin-venv, NOT the
-    host tools-python. No-op when the host already sees it; never blocks."""
-    import importlib.util
-    import os
-    import sys
-    if importlib.util.find_spec("psycopg2"):
-        return
-    site = os.environ.get(
-        "KB_PG_SITE",
-        "/root/.hermes/plugin-venv/lib/python3.14/site-packages",
-    )
-    if os.path.isdir(site) and site not in sys.path:
-        sys.path.append(site)
+    """Make psycopg2 importable from the running interpreter.
+
+    Superseded by dep_bootstrap.ensure_pg_dep_paths (shared single source of
+    truth, 2026-11-11) — kept as a thin re-export wrapper so any existing
+    caller/referencer of this exact name still resolves; the actual splice
+    logic now lives in dep_bootstrap."""
+    import dep_bootstrap
+    dep_bootstrap.ensure_pg_dep_paths()
 
 
 _ensure_pg_dep_paths()

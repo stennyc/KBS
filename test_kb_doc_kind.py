@@ -29,7 +29,6 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.append("/root/.hermes/plugin-venv/lib/python3.14/site-packages")
 
 from kb_service import KbSearchService, _deterministic_docid  # noqa: E402
 
