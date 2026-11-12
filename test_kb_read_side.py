@@ -509,6 +509,29 @@ def test_distill_no_runtime_fallback_original():
     monkey.restore()
 
 
+def test_distill_tutorial_exception_in_instructions():
+    """The distill prompt must carry the reproducible-tutorial exception so
+    step-by-step fix-tutorials are NOT compressed to a one-line conclusion
+    (owner ruling 2026-11-12: 步骤型/可复现型教程不压缩、宁可长). Pin the
+    guardrail text end-to-end: the LLM sees the exception, and the schema
+    field carrying distilled_content is annotated with the same constraint
+    (keeps instruction + schema口径一致)."""
+    import kb_distill
+    # Instruction text carries the exception (re-doable > shorter).
+    ins = kb_distill.DISTILL_INSTRUCTIONS
+    assert "EXCEPTION" in ins and "reproducible step-by-step" in ins, \
+        "distill instructions must guard reproducible tutorials"
+    assert "use_original" in ins and "code block" in ins and "commit ref" in ins, \
+        "exception must instruct: keep steps/code-blocks/commit-refs intact"
+    # The schema field is annotated with the matching constraint so the two
+    # surfaces (free-text instructions vs. structured schema) don't drift.
+    schema = kb_distill.DISTILL_SCHEMA
+    content_field = schema["properties"]["distilled_content"]
+    desc = content_field.get("description", "")
+    assert "re-doable" in desc and "redundant prose" in desc, \
+        f"schema distilled_content must carry the tutorial constraint: {desc!r}"
+
+
 def test_distill_passes_short_timeout():
     """The distill LLM call must pass a SHORT timeout (well under the host's
     60s default + the 30s hook ceiling) so a hung upstream can't trip the

@@ -96,6 +96,16 @@ DISTILL_INSTRUCTIONS = (
     "  3. The model does not know it at all (project-internal fact, "
     "local decision, config snippet that only applies here): distill to a "
     "minimal self-contained unit (2-6 lines, or a short checklist).\n"
+    "  EXCEPTION (reproducible step-by-step tutorials / fix-tutorials): if "
+    "the input is a project-internal FIX or HOW-TO whose value is that it "
+    "can be RE-DONE by following it (numbered steps, commit refs, "
+    "regression/acceptance checks, 现象→根因→修法→验收 structure), do NOT "
+    "compress it to a one-line conclusion — that would strip the very "
+    "steps the entry exists to carry. Set use_original (keep the full "
+    "tutorial verbatim) OR distill only by REMOVING genuinely redundant "
+    "prose while preserving every step, code block, commit ref, and check "
+    "list intact. A shorter-but-no-longer-reproducible distill is a "
+    "data-loss failure, not an improvement.\n"
     "  The v2 agent-knowledge classes (reusable strategy / anti-pattern "
     "trap / tool-quirk / premise-conditioned experience) all follow rule "
     "2 or 3: keep the premise/condition explicit in the distilled unit — "
@@ -113,7 +123,13 @@ DISTILL_SCHEMA = {
         "drop_reason": {"type": ["string", "null"],
                         "description": "Non-empty ONLY for tier=model-knows"},
         "distilled_title": {"type": "string"},
-        "distilled_content": {"type": "string"},
+        "distilled_content": {"type": "string",
+                              "description": "For reproducible step-by-step "
+                                             "fix-tutorials, do NOT strip the "
+                                             "steps / code blocks / commit "
+                                             "refs / check-lists — keep it "
+                                             "re-doable; compress only "
+                                             "redundant prose."},
         "anchor_points": {"type": "array",
                           "items": {"type": "string"},
                           "description": "the 2-5 concrete, checkable "
