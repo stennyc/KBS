@@ -24,7 +24,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-_PLUGIN_DIR = Path(__file__).resolve().parent
+_PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PLUGIN_DIR))
 
 import kb_ingest_hook as hook  # noqa: E402

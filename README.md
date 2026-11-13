@@ -59,21 +59,23 @@ references/            PRD / 开发计划 / 归档 / 部署注记 / 源协议
 
 ## 测试
 
-全量单测（含 contract/e2e/multiproc/P0 治理 + 插件侧 10 个测试文件，约 207 条 + 3 subtests）：
+测试脚本统一收在 `tests/`（仓库根目录无散落脚手测试）；`tests/conftest.py` 自动把仓库根（`kb_service` 等可 import 模块所在目录）splice 到 `sys.path`，所以从 `tests/` 直接跑即可，无需手设 `PYTHONPATH`。全量单测（宿主侧 contract/e2e/multiproc/P0 治理 + 插件侧各文件，约 214 条 + subtests）：
 
 ```bash
-# 宿主依赖（kb_service 等模块 import 自宿主）
+# 宿主依赖（kb_service 等模块 import 自宿主）——仅手动直跑时需要
 export PYTHONPATH=/usr/local/lib/hermes-agent
 
 # 宿主侧
-python -m pytest test_contract.py test_e2e.py test_multiproc.py test_p0_governance.py -q
+python -m pytest tests/test_contract.py tests/test_e2e.py tests/test_multiproc.py tests/test_p0_governance.py -q
 
 # 插件侧
-cd plugin/knowledge-base-search
-python -m pytest test_kb_agent_experience.py test_kb_phase2.py test_kb_phase3_tr3.py \
-  test_kb_phase3_tr6.py test_kb_phase4_tr9.py test_kb_phase4_tr10.py \
-  test_kb_read_side.py test_kb_ingest_hook.py test_kb_ingest_rules.py \
-  test_kb_rerank_reinforce.py -q
+python -m pytest tests/test_kb_agent_experience.py tests/test_kb_phase2.py tests/test_kb_phase3_tr3.py \
+  tests/test_kb_phase3_tr6.py tests/test_kb_phase4_tr9.py tests/test_kb_phase4_tr10.py \
+  tests/test_kb_read_side.py tests/test_kb_ingest_hook.py tests/test_kb_ingest_rules.py \
+  tests/test_kb_rerank_reinforce.py -q
+
+# 全量
+python -m pytest tests/ -q
 ```
 
 （本仓库 7-gateway 部署环境的实际跑法见 `deploy_knowledge_base_plugin.sh` 和 `references/kb-deployment-notes.md`。）

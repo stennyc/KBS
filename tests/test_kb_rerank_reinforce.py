@@ -21,9 +21,9 @@ import time
 import threading
 from pathlib import Path
 
-_PLUGIN_DIR = Path(__file__).resolve().parent
+_PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PLUGIN_DIR))
-_kb_root = str(_PLUGIN_DIR.parents[1])
+_kb_root = str(_PLUGIN_DIR.parents[2])
 if _kb_root not in sys.path:
     sys.path.insert(0, _kb_root)
 

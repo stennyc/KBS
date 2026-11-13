@@ -29,7 +29,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-_PLUGIN_DIR = Path(__file__).resolve().parent
+_PLUGIN_DIR = Path(__file__).resolve().parent.parent
 if str(_PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_DIR))
 

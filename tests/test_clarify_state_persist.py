@@ -29,7 +29,7 @@ from pathlib import Path
 # Resolve the active source tree (plugin dir + KB service dir) the same
 # way the deploy quickstart does; a non-gateway interpreter needs both
 # on sys.path for the bare imports below.
-_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+_PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for _d in (
     _PLUGIN_DIR,
     os.environ.get("KB_HOME", "/root/.hermes/plugins/knowledge-base-search"),

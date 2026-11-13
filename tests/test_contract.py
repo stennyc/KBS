@@ -19,7 +19,7 @@ import unittest
 from pathlib import Path
 
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from search_backend import SCHEMA_VERSION, SearchResult  # noqa: E402
 from stub_backend import InMemoryStubBackend  # noqa: E402

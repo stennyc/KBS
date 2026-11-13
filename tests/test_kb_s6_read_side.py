@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from __init__ import KB_SEARCH_CENTRAL_SCHEMA, _kb_search_central_handler
 
 

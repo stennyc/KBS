@@ -26,7 +26,7 @@ from kb_service import KbSearchService, _normalize_docs, _deterministic_docid
 # Self-contained plugin dir: this test file and the service layer
 # (kb_service.py, hot_layer.py, ...) all live in the SAME directory
 # (single source of truth — .hermes/plugins/knowledge-base-search/).
-PLUGIN_DIR = Path(__file__).resolve().parent
+PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_DIR))
 _PLUGIN_INIT = PLUGIN_DIR / "__init__.py"
 

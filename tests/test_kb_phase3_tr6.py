@@ -41,12 +41,12 @@ import math
 import sys
 from pathlib import Path
 
-_PLUGIN_DIR = Path(__file__).resolve().parent
+_PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PLUGIN_DIR))
 # The service-boundary tests import kb_service / kb_rerank: resolve the
 # ACTIVE tree (the worktree checkout this test file belongs to), not a
 # stale sibling checkout on the inherited environment's sys.path.
-_kb_root = str(_PLUGIN_DIR.parents[1])
+_kb_root = str(_PLUGIN_DIR.parents[2])
 sys.path.insert(0, _kb_root)  # first entry: this tree wins
 
 import kb_rerank  # noqa: E402

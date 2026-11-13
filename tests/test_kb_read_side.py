@@ -25,9 +25,9 @@ import pytest
 
 # Put the plugin dir + KB package on sys.path so the in-process imports
 # (kb_service, kb_ingest_hook) resolve exactly the way the gateway loads them.
-_PLUGIN_DIR = Path(__file__).resolve().parent
+_PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PLUGIN_DIR))
-_kb_root = str(_PLUGIN_DIR.parents[1])  # .../knowledge-base
+_kb_root = str(_PLUGIN_DIR.parents[2])  # .../knowledge-base
 if _kb_root not in sys.path:
     sys.path.insert(0, _kb_root)
 

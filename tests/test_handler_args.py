@@ -17,7 +17,7 @@ import sys
 import unittest
 from pathlib import Path
 
-_PLUGIN_DIR = Path(__file__).resolve().parent
+_PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PLUGIN_DIR))
 
 from handler_args import _normalize_handler_args  # noqa: E402

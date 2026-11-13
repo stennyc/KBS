@@ -20,7 +20,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def _child_ingest(data_dir: str, docs: list) -> int:
@@ -151,7 +151,7 @@ class CrossProcessTests(unittest.TestCase):
         KbSearchService(base).ingest([{"docid": "x", "title": "t",
                                         "content": "x y z"}])
         self.assertTrue((base / "lock").exists(), "flock sidecar missing")
-        repo = Path(__file__).resolve().parent
+        repo = Path(__file__).resolve().parent.parent
         self.assertFalse((repo / "lock").exists(),
                          "lock file leaked into the repo")
 

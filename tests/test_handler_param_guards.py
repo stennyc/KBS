@@ -28,7 +28,7 @@ from pathlib import Path
 
 import unittest
 
-_PLUGIN_DIR = Path(__file__).resolve().parent
+_PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PLUGIN_DIR))
 
 import __init__ as kb  # noqa: E402

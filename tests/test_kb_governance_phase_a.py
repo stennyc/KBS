@@ -81,7 +81,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Isolation (2026-10-19): this file's _plugin_module() re-execs __init__.py
 # under a fresh module name, so its handlers lazily call _svc() against the
@@ -101,7 +101,7 @@ from kb_ingest_hook import (
 from kb_ingest_rules import Candidate
 from staging import StagingStore
 
-PLUGIN_DIR = Path(__file__).resolve().parent
+PLUGIN_DIR = Path(__file__).resolve().parent.parent
 
 
 # ---------------------------------------------------------------------------
@@ -1527,7 +1527,7 @@ class GetRegistrationFaceTests(_ut.TestCase):
     def _plugin_module(self):
         import importlib.util
         from pathlib import Path
-        p = Path(__file__).resolve().parent / "__init__.py"
+        p = Path(__file__).resolve().parent.parent / "__init__.py"
         spec = importlib.util.spec_from_file_location(
             "kb_plugin_reg_test", p)
         m = importlib.util.module_from_spec(spec)
