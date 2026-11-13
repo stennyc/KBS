@@ -1,6 +1,8 @@
-# knowledge-base
+# knowledge-base (KBS)
 
-纯本地的双层知识库检索引擎 + Hermes Agent 插件：给 AI agent（以及委托它的用户工具）一份"任务过程中学到的经验账本"和"用户自己沉淀的知识"，检索不依赖任何模型、不依赖外部 API。
+> 纯本地的双层知识库检索引擎 + Hermes Agent 插件：给 AI agent（以及委托它的用户工具）一份"任务过程中学到的经验账本"和"用户自己沉淀的知识"，检索不依赖任何模型、不依赖外部 API。
+>
+> **许可**：MIT 协议，**禁止商用（No Commercial Use）**——仅限个人、学习、内部工具等非商业用途。详见 [License 节](#许可)。
 
 ## 这是什么
 
@@ -87,4 +89,6 @@ python -m pytest test_kb_agent_experience.py test_kb_phase2.py test_kb_phase3_tr
 
 ## 许可
 
-MIT（见 `plugin/knowledge-base-search/plugin.yaml`）。
+MIT 协议（见 `plugin/knowledge-base-search/plugin.yaml` 的 `license: MIT`）。
+
+**附加约束：禁止商用（No Commercial Use）。** 本仓库代码与知识库文档仅限个人、学习、内部工具等非商业使用；不得用于商业产品、对外收费服务或转售。MIT 条款本身保留，商用条款为用户自加的非标准附加约束。
