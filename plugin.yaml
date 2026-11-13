@@ -1,5 +1,5 @@
 name: knowledge-base-search
-version: 0.1.0
+version: 0.2.0-dev
 description: "本地双层知识库检索 — single-shot 工具，rank_bm25 无模型无外部 API"
 author: "user"
 license: "MIT (No Commercial Use)"
