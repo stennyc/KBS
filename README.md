@@ -2,7 +2,7 @@
 
 > 纯本地的双层知识库检索引擎 + Hermes Agent 插件：给 AI agent（以及委托它的用户工具）一份"任务过程中学到的经验账本"和"用户自己沉淀的知识"，检索不依赖任何模型、不依赖外部 API。
 >
-> **许可**：MIT 协议，**禁止商用（No Commercial Use）**——仅限个人、学习、内部工具等非商业用途。详见 [License 节](#许可)。
+> **许可**：GPL-3.0-or-later（copyleft，衍生作品同许可），**非商用自由使用；商用需向作者购买授权**。详见 [License 节](#许可)。
 
 ## 这是什么
 
@@ -91,6 +91,6 @@ python -m pytest tests/ -q
 
 ## 许可
 
-MIT 协议（见 `plugin/knowledge-base-search/plugin.yaml` 的 `license: MIT`）。
+GPL-3.0-or-later（见 `plugin.yaml` 的 `license: GPL-3.0-or-later`，正文见 `LICENSE`；`rank_bm25` 为 Apache-2.0、`jieba` 为 MIT，均与 GPL 兼容）。
 
-**附加约束：禁止商用（No Commercial Use）。** 本仓库代码与知识库文档仅限个人、学习、内部工具等非商业使用；不得用于商业产品、对外收费服务或转售。MIT 条款本身保留，商用条款为用户自加的非标准附加约束。
+**附加约束：禁止商用（No Commercial Use）。** 本仓库代码与知识库文档仅限个人、学习、内部工具等非商业使用；商用（嵌入商业产品、对外收费服务、转售）需向作者 stennyc 另行购买授权。该条款为 GPL-3.0-or-later 之上的非标准附加约束，与 GPL 正文冲突时以禁商用条款为准。
