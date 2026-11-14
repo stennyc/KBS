@@ -2,7 +2,7 @@ name: knowledge-base-search
 version: 0.2.0-dev
 description: "本地双层知识库检索 — single-shot 工具，rank_bm25 无模型无外部 API"
 author: "stennyc"
-license: GPL-3.0-or-later
+license: AGPL-3.0-or-later
 provides_hooks:
   - post_llm_call
 provides_tools:
