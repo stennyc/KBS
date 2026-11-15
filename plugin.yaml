@@ -1,5 +1,5 @@
 name: knowledge-base-search
-version: 0.2.0-dev
+version: 0.3.0-dev
 description: "本地双层知识库检索 — single-shot 工具，rank_bm25 无模型无外部 API"
 author: "stennyc"
 license: AGPL-3.0-or-later
@@ -10,3 +10,9 @@ provides_tools:
   - knowledge_base_ingest
   - knowledge_base_confirm
   - kb_search_central
+config_schema:
+  shared_memory:
+    type: dict
+    default: {}
+    label: "Shared memory (central)"
+    description: "中央 shared-memory 面配置：enabled / agent_id / token / pg{host,port,db,user,password}。代码直读宿主 config.yaml 的 plugins.entries.knowledge-base-search.shared_memory 段（与面板保存路径一致），缺段或 enabled!=true 时该面 no-op。"
