@@ -21,10 +21,22 @@ import os
 import sys
 from pathlib import Path
 
+# --- cross-platform HERMES_HOME normalizer -----------------------------------
+# On Windows, a Linux-style absolute path (e.g. "/root/.hermes" from a
+# migrated config) produces a *relative* WindowsPath anchored at the drive
+# root path when passed verbatim. Detect and normalise so all downstream Path()
+# calls resolve correctly regardless of how HERMES_HOME was seeded.
+def _norm_hermes_home(raw: str) -> str:
+    if sys.platform == "win32":
+        # Windows: paths starting with "/" are Linux absolute → treat as relative
+        if raw.startswith("/") and not raw.startswith("//"):
+            return str(Path.home() / ".hermes")
+    return raw
+
 # --- resolve the knowledge-base package (repo asset, not a site package) ----
 # The service lives in the project repo; make it importable from anywhere the
 # gateway spawns this plugin. Env override wins for non-default deployments.
-_hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+_hermes_home = _norm_hermes_home(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
 _KB_DIR = os.environ.get(
     "KB_HOME",
     os.path.join(_hermes_home, "plugins", "knowledge-base-search"),

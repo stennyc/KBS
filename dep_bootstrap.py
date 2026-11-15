@@ -34,6 +34,14 @@ import sys
 from pathlib import Path
 
 
+# --- cross-platform HERMES_HOME normalizer -----------------------------------
+def norm_hermes_home(raw: str) -> str:
+    if sys.platform == 'win32':
+        if raw.startswith('/') and not raw.startswith('//'):
+            return str(Path.home() / '.hermes')
+    return raw
+
+
 def _find_hermes_managed_venv(hermes_home: str) -> str | None:
     """Return the venv path stored in Hermes' ``facts.json``."""
     installs_dir = os.path.join(hermes_home, "installs")
