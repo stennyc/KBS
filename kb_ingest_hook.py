@@ -406,6 +406,12 @@ def _llm_judge_candidate(main_runtime, text: str,
         text_out = (content or "").strip()
     except Exception:
         return fallback
+    # Strip optional thinking/reasoning blocks, then code fence, then parse.
+    # Reasoning models embed <thinking>...</thinking> in content — strip first
+    # so the code-fence regex only sees clean text.
+    _THINK_RE = _re.compile(r"<thinking[^>]*>.*?</thinking>|<reasoning[^>]*>.*?</reasoning>",
+                            _re.DOTALL | _re.IGNORECASE)
+    text_out = _THINK_RE.sub("", text_out).strip()
     # Strip optional code fence + parse.
     m = _re.search(r"```(?:json)?\s*(.+?)```", text_out, _re.DOTALL | _re.IGNORECASE)
     raw = m.group(1).strip() if m else text_out

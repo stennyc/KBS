@@ -225,6 +225,10 @@ def distill_content(main_runtime: Optional[Dict[str, Any]],
     except Exception:
         verdict["reason"] = "llm_error:response_shape"
         return verdict
+    _THINK_RE = re.compile(r"<thinking[^>]*>.*?</thinking>|<reasoning[^>]*>.*?</reasoning>", re.DOTALL | re.IGNORECASE)
+    # Strip thinking blocks first — reasoning models embed these in content,
+    # and they may contain { } that would break code-fence or JSON parsing.
+    text_out = _THINK_RE.sub("", text_out).strip()
     m = re.search(r"```(?:json)?\s*(.+?)```", text_out, re.DOTALL | re.IGNORECASE)
     raw = m.group(1).strip() if m else text_out
     try:

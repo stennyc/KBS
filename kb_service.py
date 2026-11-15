@@ -1761,6 +1761,11 @@ class KbSearchService:
             # (e.g. 'v2 replaces {v1}'), silently dropping a supersedes
             # verdict into the fail-soft None branch.
             text = content.strip()
+            # Strip thinking/reasoning blocks first — reasoning models embed these
+            # in message.content and they may contain { or } that break JSON parsing.
+            _THINK_RE = _re.compile(r"<thinking[^>]*>.*?</thinking>|<reasoning[^>]*>.*?</reasoning>",
+                                    _re.DOTALL | _re.IGNORECASE)
+            text = _THINK_RE.sub("", text).strip()
             verdict = None
             if text:
                 try:
