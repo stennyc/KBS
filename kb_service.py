@@ -64,10 +64,10 @@ from two_layer import TwoLayerBackend
 from search_backend import SearchBackendError, SearchResult
 from staging import StagingStore
 
-try:
-    import fcntl
-except ImportError:  # non-POSIX dev fallback: no-op locking, single process
-    fcntl = None
+# kbs owns its own flock shim (Windows-compatible). No global fcntl dependency.
+import types
+from ._fcntl import flock, LOCK_SH, LOCK_EX, LOCK_NB, LOCK_UN
+fcntl = types.SimpleNamespace(flock=flock, LOCK_SH=LOCK_SH, LOCK_EX=LOCK_EX, LOCK_NB=LOCK_NB, LOCK_UN=LOCK_UN)
 
 # Lock + write-epoch marker live in the DATA dir (deploy-created), not the repo.
 _LOCK_NAME = "lock"
