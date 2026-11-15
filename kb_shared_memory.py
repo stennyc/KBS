@@ -84,7 +84,13 @@ def _load_shared_memory_config() -> Optional[Dict[str, Any]]:
     try:
         entries = (parsed or {}).get("plugins", {}).get("entries", {})
         kb = entries.get("knowledge-base-search") or {}
-        sm = kb.get("shared_memory")
+        # Panel (settings hub) saves to .settings.shared_memory; the legacy
+        # path is .shared_memory. Prefer the panel path so edits in the
+        # Settings UI are honored; fall back to the legacy key for
+        # deployments that only have the old layout.
+        sm = (kb.get("settings") or {}).get("shared_memory")
+        if not isinstance(sm, dict):
+            sm = kb.get("shared_memory")
         if not isinstance(sm, dict) or not sm.get("enabled"):
             return None
         pg = sm.get("pg") or {}
