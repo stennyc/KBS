@@ -2,8 +2,9 @@
 """Commit this OID so both @coder and @researcher sign the same machine output."""
 import subprocess, sys, tempfile, os
 from pathlib import Path
+from dep_bootstrap import resolve_hermes_home  # noqa: E402
 
-_hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+_hermes_home = resolve_hermes_home()
 _WORKDIR = _hermes_home  # Use HERMES_HOME as the working directory root
 
 print("=" * 60)

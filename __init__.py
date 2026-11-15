@@ -28,15 +28,36 @@ from pathlib import Path
 # calls resolve correctly regardless of how HERMES_HOME was seeded.
 def _norm_hermes_home(raw: str) -> str:
     if sys.platform == "win32":
-        # Windows: paths starting with "/" are Linux absolute → treat as relative
-        if raw.startswith("/") and not raw.startswith("//"):
+        # Only normalize known Linux defaults; arbitrary paths (e.g. /tmp/foo)
+        # are left as-is since the user may have explicitly set them.
+        if raw in ("/root/.hermes", "/.hermes"):
             return str(Path.home() / ".hermes")
     return raw
+
+
+def _resolve_hermes_home() -> str:
+    """Resolve HERMES_HOME with cross-platform auto-detection.
+
+    Priority:
+      1. ``HERMES_HOME`` env var (set by multiplex gateway per-profile)
+      2. Windows: ``%LOCALAPPDATA%\\hermes`` (desktop app default on Win)
+      3. Fallback: ``~/.hermes`` (POSIX / legacy)
+    """
+    hh = os.environ.get("HERMES_HOME", "").strip()
+    if hh:
+        return _norm_hermes_home(hh)
+    if sys.platform == "win32":
+        localapp = os.environ.get("LOCALAPPDATA", "").strip()
+        if localapp:
+            candidate = os.path.join(localapp, "hermes")
+            if os.path.isdir(candidate):
+                return candidate
+    return os.path.expanduser("~/.hermes")
 
 # --- resolve the knowledge-base package (repo asset, not a site package) ----
 # The service lives in the project repo; make it importable from anywhere the
 # gateway spawns this plugin. Env override wins for non-default deployments.
-_hermes_home = _norm_hermes_home(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+_hermes_home = _resolve_hermes_home()
 _KB_DIR = os.environ.get(
     "KB_HOME",
     os.path.join(_hermes_home, "plugins", "knowledge-base-search"),

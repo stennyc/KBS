@@ -11,6 +11,7 @@ import subprocess
 import sys
 import shutil
 from pathlib import Path
+from dep_bootstrap import resolve_hermes_home  # noqa: E402
 
 print("== which python3 on PATH ==")
 print(" ", shutil.which("python3"))
@@ -25,7 +26,7 @@ for m in ("rank_bm25", "jieba", "pyterrier"):
     print(f"  {m}: {'YES' if has(m) else 'NO'}")
 
 # B: find all python binaries under the hermes tools/installs trees
-_hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+_hermes_home = resolve_hermes_home()
 cands = set()
 # Linux patterns
 for pat in (os.path.join(_hermes_home, "tools", "*", "bin", "python*"),

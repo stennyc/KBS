@@ -37,9 +37,30 @@ from pathlib import Path
 # --- cross-platform HERMES_HOME normalizer -----------------------------------
 def norm_hermes_home(raw: str) -> str:
     if sys.platform == 'win32':
-        if raw.startswith('/') and not raw.startswith('//'):
+        # Only normalize known Linux defaults; arbitrary paths are left as-is.
+        if raw in ('/root/.hermes', '/.hermes'):
             return str(Path.home() / '.hermes')
     return raw
+
+
+def resolve_hermes_home() -> str:
+    """Resolve HERMES_HOME with cross-platform auto-detection.
+
+    Priority:
+      1. ``HERMES_HOME`` env var (set by multiplex gateway per-profile)
+      2. Windows: ``%LOCALAPPDATA%\\hermes`` (desktop app default on Win)
+      3. Fallback: ``~/.hermes`` (POSIX / legacy)
+    """
+    hh = os.environ.get("HERMES_HOME", "").strip()
+    if hh:
+        return norm_hermes_home(hh)
+    if sys.platform == "win32":
+        localapp = os.environ.get("LOCALAPPDATA", "").strip()
+        if localapp:
+            candidate = os.path.join(localapp, "hermes")
+            if os.path.isdir(candidate):
+                return candidate
+    return os.path.expanduser("~/.hermes")
 
 
 def _find_hermes_managed_venv(hermes_home: str) -> str | None:
@@ -75,7 +96,7 @@ def _find_dep_dirs() -> list[str]:
     if override:
         dirs.extend(d for d in override.split("=") if d)
 
-    hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+    hermes_home = resolve_hermes_home()
     managed = _find_hermes_managed_venv(hermes_home)
     if managed:
         for pattern in [os.path.join(managed, "lib", "python*", "site-packages"),

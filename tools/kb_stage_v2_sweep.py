@@ -32,12 +32,13 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dep_bootstrap import resolve_hermes_home  # noqa: E402
 from kb_ingest_rules import (  # noqa: E402
     merge_rules, CandidateDetector, is_noise_title, is_meta_instruction,
 )
 
 _DEFAULT_PY = os.environ.get("KB_PY_BIN", sys.executable)
-DEFAULT_DATA_DIR = os.environ.get("KB_DATA_DIR", os.path.join(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")), "kb-data"))
+DEFAULT_DATA_DIR = os.environ.get("KB_DATA_DIR", os.path.join(resolve_hermes_home(), "kb-data"))
 _ASYNC_DELEGATION_RE = re.compile(r"\[ASYNC DELEGATION")
 
 

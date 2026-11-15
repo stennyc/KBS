@@ -25,11 +25,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# runbook 唯一入口三件套：pin 解释器 / 共享数据目录 / 共享日志（与 plugin
+from dep_bootstrap import resolve_hermes_home  # noqa: E402
+
+# runbook 唯一入口三件套：pin 解释器 / 共享数据目录 / 共享 로그（与 plugin
 # 适配器同一套 env 约定：KB_PY_BIN / KB_DATA_DIR / KB_LOG_PATH）。
 # pin 解释器优先从 KB_PY_BIN 获取，fallback 到 $HERMES_HOME/tools/ 下的 python，
 # 再 fallback 到 sys.executable（当前解释器）。
-_hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+_hermes_home = resolve_hermes_home()
 if sys.platform == "win32":
     _DEFAULT_PY_BIN = os.path.join(_hermes_home, "tools", "python.exe")
     if not os.path.exists(_DEFAULT_PY_BIN):

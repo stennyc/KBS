@@ -13,8 +13,9 @@ import subprocess
 import tempfile
 import shutil
 from pathlib import Path
+from dep_bootstrap import resolve_hermes_home  # noqa: E402
 
-_hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+_hermes_home = resolve_hermes_home()
 sys.path.insert(0, os.path.join(_hermes_home, "plugin-venv", "lib", "python*", "site-packages"))
 # Windows fallback: try the venv directly
 if sys.platform == "win32":
