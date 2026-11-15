@@ -2,7 +2,14 @@ name: knowledge-base-search
 version: 0.2.0-dev
 description: "本地双层知识库检索 — single-shot 工具，rank_bm25 无模型无外部 API"
 author: "stennyc"
+<<<<<<< HEAD
 license: AGPL-3.0-or-later
+=======
+license: GPL-3.0-or-later
+python_dependencies:
+  - "rank-bm25"
+  - "jieba"
+>>>>>>> 67e6d46 (feat: add install.sh + install.ps1 with dual-path support)
 provides_hooks:
   - post_llm_call
 provides_tools:
