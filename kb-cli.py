@@ -38,17 +38,17 @@ if _PLUGIN_DIR not in sys.path:
 
 # Keep the service / data-dir resolution identical to the tool face so a CLI
 # ingest lands in the same corpus (same lock, same seq, same hot/cold split).
-_DATA_DIR = Path(os.environ.get("KB_DATA_DIR", "/root/.hermes/kb-data"))
+_DATA_DIR = Path(os.environ.get("KB_DATA_DIR", os.path.join(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")), "kb-data")))
 _AUDIT_PATH = os.environ.get(
     "KB_AUDIT_PATH",
-    os.path.join(os.environ.get("HERMES_HOME", "/root/.hermes"),
+    os.path.join(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")),
                  "logs", "knowledge-base-ingest.jsonl"))
 
 
 def _svc():
     from kb_service import KbSearchService, configure_logging
     _log_path = os.environ.get(
-        "KB_LOG_PATH", "/root/.hermes/logs/knowledge-base.log")
+        "KB_LOG_PATH", os.path.join(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")), "logs", "knowledge-base.log"))
     configure_logging(_log_path)
     return KbSearchService(_DATA_DIR, audit_path=Path(_AUDIT_PATH))
 

@@ -36,7 +36,8 @@ from kb_ingest_rules import (  # noqa: E402
     merge_rules, CandidateDetector, is_noise_title, is_meta_instruction,
 )
 
-DEFAULT_DATA_DIR = "/root/.hermes/kb-data"
+_DEFAULT_PY = os.environ.get("KB_PY_BIN", sys.executable)
+DEFAULT_DATA_DIR = os.environ.get("KB_DATA_DIR", os.path.join(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")), "kb-data"))
 _ASYNC_DELEGATION_RE = re.compile(r"\[ASYNC DELEGATION")
 
 

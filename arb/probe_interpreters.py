@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import shutil
+from pathlib import Path
 
 print("== which python3 on PATH ==")
 print(" ", shutil.which("python3"))
@@ -24,11 +25,19 @@ for m in ("rank_bm25", "jieba", "pyterrier"):
     print(f"  {m}: {'YES' if has(m) else 'NO'}")
 
 # B: find all python binaries under the hermes tools/installs trees
+_hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
 cands = set()
-for pat in ("/root/.hermes/tools/*/bin/python*",
-           "/root/.hermes/installs/*/environments/*/venv/bin/python*",
+# Linux patterns
+for pat in (os.path.join(_hermes_home, "tools", "*", "bin", "python*"),
+           os.path.join(_hermes_home, "installs", "*", "environments", "*", "venv", "bin", "python*"),
            "/usr/bin/python3*", "/usr/local/bin/python3*"):
     cands.update(glob.glob(pat))
+# Windows patterns
+if sys.platform == "win32":
+    for pat in (os.path.join(_hermes_home, "tools", "*", "python.exe"),
+               os.path.join(_hermes_home, "plugin-venv", "Scripts", "python.exe"),
+               os.path.join(_hermes_home, "installs", "*", "python.exe")):
+        cands.update(glob.glob(pat))
 
 print("\n== rank_bm25 / jieba importable per interpreter ==")
 checked = 0

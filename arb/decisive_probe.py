@@ -12,8 +12,16 @@ import pathlib
 import subprocess
 import tempfile
 import shutil
+from pathlib import Path
 
-sys.path.insert(0, "/root/.hermes/tools/python-3.14.7+202****0901-linux-x64/lib/python3.14/site-packages")
+_hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+sys.path.insert(0, os.path.join(_hermes_home, "plugin-venv", "lib", "python*", "site-packages"))
+# Windows fallback: try the venv directly
+if sys.platform == "win32":
+    _venv_lib = Path(_hermes_home) / "plugin-venv" / "Lib" / "site-packages"
+    if _venv_lib.exists():
+        sys.path.insert(0, str(_venv_lib))
+    sys.path.insert(0, str(Path(sys.executable).parent.parent / "Lib" / "site-packages"))
 
 import pyterrier as pt
 import jieba
@@ -24,7 +32,7 @@ print("=" * 70)
 print(f"\n[Environment] PyTerrier {pt.__version__}, Terrier 5.11")
 
 # IMPORTANT: Run from workspace root so Terrier's ./var/ resolution works
-workspace_root = "/root/.hermes/workspace"
+workspace_root = os.environ.get("HERMES_WORKSPACE", os.path.join(_hermes_home, "workspace"))
 os.chdir(workspace_root)
 print(f"[CWD] {os.getcwd()}")
 
@@ -154,7 +162,7 @@ try:
     
     probe_script = f'''
 import sys
-sys.path.insert(0, "/root/.hermes/tools/python-3.14.7+202****0901-linux-x64/lib/python3.14/site-packages")
+sys.path.insert(0, os.path.join(_hermes_home, "plugin-venv", "Lib", "site-packages"))
 import pyterrier as pt
 import os
 

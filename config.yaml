@@ -1,8 +1,10 @@
 # Knowledge Base Plugin Config
 # P0: 基础配置
-data_dir: "/root/.hermes/kb-data"
-audit_log: "/root/.hermes/logs/knowledge-base-ingest.jsonl"
-audit_archive_dir: "/root/.hermes/logs/kb-audit-archive"
+# 路径通过环境变量覆盖: KB_DATA_DIR / KB_LOG_PATH / KB_AUDIT_PATH
+# 默认值自动适配 OS: Linux -> ~/.hermes/, Windows -> %HERMES_HOME% 或 ~/
+data_dir: "${KB_DATA_DIR:-$HERMES_HOME/kb-data}"
+audit_log: "${KB_LOG_PATH:-$HERMES_HOME/logs/knowledge-base-ingest.jsonl}"
+audit_archive_dir: "${KB_AUDIT_PATH:-$HERMES_HOME/logs/kb-audit-archive}"
 
 # P0: 长度门
 length_gate:

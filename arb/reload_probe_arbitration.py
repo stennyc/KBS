@@ -3,6 +3,9 @@
 import subprocess, sys, tempfile, os
 from pathlib import Path
 
+_hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+_WORKDIR = _hermes_home  # Use HERMES_HOME as the working directory root
+
 print("=" * 60)
 print("PYTERRIER 1.1.2 RELOAD PROBE (仲裁脚本)")
 print("=" * 60)
@@ -27,22 +30,22 @@ indexer.index(iter([{{
 }}]))
 print("BUILD_OK")
 ''')
-    r_build = subprocess.run([sys.executable, str(build_py)], capture_output=True, text=True, cwd="/root")
+    r_build = subprocess.run([sys.executable, str(build_py)], capture_output=True, text=True, cwd=_WORKDIR)
     print(f"\n[Build] {r_build.stdout.strip()}")
     if r_build.stderr:
         print(f"  (stderr: {r_build.stderr[:200]})")
-    
+
     # Probe 1: top-level data.properties exists?
     top_props = list(idx_dir.glob("data*.properties")) + list(idx_dir.glob("index*.properties"))
     stream_props = list(idx_dir.glob("data_stream*.properties"))
     print(f"\n[Probe 1] Top-level properties: {[p.name for p in top_props]}")
     print(f"           Stream-level:        {[p.name for p in stream_props]}")
     P1 = "HAS_TOP_LEVEL_PROPERTIES" if top_props else "NO_TOP_LEVEL_PROPERTIES"
-    
+
     # Probe 2: in-process Retriever with path string
     probe2_py = Path(d) / "p2.py"
     probe2_py.write_text(f'''
-import os; os.chdir("/root")
+import os; os.chdir("{_WORKDIR}")
 import pyterrier as pt
 pt.java.init()
 from pyterrier.terrier import Retriever
@@ -54,23 +57,23 @@ try:
 except Exception as e:
     print(f"FAIL: {{type(e).__name__}}: {{str(e)[:80]}}")
 ''')
-    r2 = subprocess.run([sys.executable, str(probe2_py)], capture_output=True, text=True, cwd="/root")
+    r2 = subprocess.run([sys.executable, str(probe2_py)], capture_output=True, text=True, cwd=_WORKDIR)
     print(f"\n[Probe 2] In-process Retriever(path): {r2.stdout.strip()}")
     P2 = "IN_PROCESS_OK" if "OK" in r2.stdout else "IN_PROCESS_FAIL"
     
     # Probe 3: cross-process IndexFactory.of()
     probe3_py = Path(d) / "p3.py"
     probe3_py.write_text(f'''
-import os; os.chdir("/root")
-import pyterrier as pt
-pt.java.init()
-try:
-    idx = pt.IndexFactory.of("{idx_dir}")
-    print(f"OK docs={{idx.getCollectionStatistics().getNumberOfDocuments()}}")
-except Exception as e:
-    print(f"FAIL: {{type(e).__name__}}: {{str(e)[:80]}}")
-''')
-    r3 = subprocess.run([sys.executable, str(probe3_py)], capture_output=True, text=True, cwd="/root")
+    import os; os.chdir("{_WORKDIR}")
+    import pyterrier as pt
+    pt.java.init()
+    try:
+        idx = pt.IndexFactory.of("{idx_dir}")
+        print(f"OK docs={{idx.getCollectionStatistics().getNumberOfDocuments()}}")
+    except Exception as e:
+        print(f"FAIL: {{type(e).__name__}}: {{str(e)[:80]}}")
+    ''')
+    r3 = subprocess.run([sys.executable, str(probe3_py)], capture_output=True, text=True, cwd=_WORKDIR)
     print(f"\n[Probe 3] Cross-process IndexFactory: {r3.stdout.strip()}")
     P3 = "CROSS_PROCESS_OK" if "OK" in r3.stdout else "CROSS_PROCESS_FAIL"
     

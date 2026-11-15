@@ -24,9 +24,10 @@ from pathlib import Path
 # --- resolve the knowledge-base package (repo asset, not a site package) ----
 # The service lives in the project repo; make it importable from anywhere the
 # gateway spawns this plugin. Env override wins for non-default deployments.
+_hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
 _KB_DIR = os.environ.get(
     "KB_HOME",
-    "/root/.hermes/plugins/knowledge-base-search",
+    os.path.join(_hermes_home, "plugins", "knowledge-base-search"),
 )
 if _KB_DIR not in sys.path:
     sys.path.insert(0, _KB_DIR)
@@ -80,21 +81,21 @@ _DOC_FILE_URL_TIMEOUT_S = 15
 
 # Data dir: the shared host location (created by the deploy step; the
 # service guards loud on absence). Override via KB_DATA_DIR.
-_DATA_DIR = Path(os.environ.get("KB_DATA_DIR", "/root/.hermes/kb-data"))
+_DATA_DIR = Path(os.environ.get("KB_DATA_DIR", os.path.join(_hermes_home, "kb-data")))
 
 # Structured log: one shared file for all 7 gateway processes (single file,
 # no rotation — KB is small; grep once = full trace). Override via
 # KB_LOG_PATH. The service only *emits* records; this wiring points the
 # file handler at the shared path so ingest (INFO) + search (DEBUG) land.
 _LOG_PATH = os.environ.get(
-    "KB_LOG_PATH", "/root/.hermes/logs/knowledge-base.log",
+    "KB_LOG_PATH", os.path.join(_hermes_home, "logs", "knowledge-base.log"),
 )
 
 # P0 audit trail: one shared JSONL for the governance actions (ingest /
 # confirm / search) across all gateways. devops owns the 660 file + the
 # 770 archive dir; override via KB_AUDIT_PATH.
 _AUDIT_PATH = os.environ.get(
-    "KB_AUDIT_PATH", "/root/.hermes/logs/knowledge-base-ingest.jsonl",
+    "KB_AUDIT_PATH", os.path.join(_hermes_home, "logs", "knowledge-base-ingest.jsonl"),
 )
 
 # Module-level service so the hot layer persists across calls in one process;

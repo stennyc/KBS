@@ -27,15 +27,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # runbook 唯一入口三件套：pin 解释器 / 共享数据目录 / 共享日志（与 plugin
 # 适配器同一套 env 约定：KB_PY_BIN / KB_DATA_DIR / KB_LOG_PATH）。
-# pin 值是写死的绝对路径，不用 sys.executable 运行时推导（那是把漂移
-# 换了个写法）。
-PIN_PY_BIN = os.environ.get(
-    "KB_PY_BIN",
-    "/root/.hermes/tools/python-3.14.7+20260901-linux-x64/bin/python3.14",
-)
-DATA_DIR = Path(os.environ.get("KB_DATA_DIR", "/root/.hermes/kb-data"))
+# pin 解释器优先从 KB_PY_BIN 获取，fallback 到 $HERMES_HOME/tools/ 下的 python，
+# 再 fallback 到 sys.executable（当前解释器）。
+_hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+if sys.platform == "win32":
+    _DEFAULT_PY_BIN = os.path.join(_hermes_home, "tools", "python.exe")
+    if not os.path.exists(_DEFAULT_PY_BIN):
+        _DEFAULT_PY_BIN = sys.executable
+else:
+    # Linux: 尝试常见 tools 目录， fallback 到 sys.executable
+    import glob
+    _candidates = sorted(glob.glob(os.path.join(_hermes_home, "tools", "*", "bin", "python3.14")))
+    _DEFAULT_PY_BIN = _candidates[0] if _candidates else sys.executable
+PIN_PY_BIN = os.environ.get("KB_PY_BIN", _DEFAULT_PY_BIN)
+DATA_DIR = Path(os.environ.get("KB_DATA_DIR", os.path.join(_hermes_home, "kb-data")))
 LOG_PATH = os.environ.get(
-    "KB_LOG_PATH", "/root/.hermes/logs/knowledge-base.log",
+    "KB_LOG_PATH", os.path.join(_hermes_home, "logs", "knowledge-base.log"),
 )
 PROFILES = ["coder", "orchestrator", "reviewer", "researcher",
             "product-manager", "data-engineer", "default"]
@@ -120,7 +127,7 @@ def _gateway_active() -> tuple[bool, str]:
     except (OSError, subprocess.SubprocessError):
         err = "systemctl 不可用"
     # 降级：diag log 末条 gateway.start（只证最近一次启动，不证运行中）
-    log = Path("/root/.hermes/logs/gateway-exit-diag.log")
+    log = Path(os.environ.get("KB_DIAG_LOG_PATH", os.path.join(_hermes_home, "logs", "gateway-exit-diag.log")))
     if log.exists():
         last = [l for l in log.read_text().splitlines()
                 if "gateway.start" in l]
@@ -160,7 +167,7 @@ def check() -> bool:
 
     # [2] 软链
     print("\n[2] Plugin 软链")
-    link = Path("/root/.hermes/plugins/knowledge-base-search")
+    link = Path(os.path.join(_hermes_home, "plugins", "knowledge-base-search"))
     if link.is_symlink():
         target = link.resolve()
         print(f"  ✓ 软链有效: {target}")
@@ -208,7 +215,7 @@ def check() -> bool:
     print("\n[7] Profile 注入检查（YAML parse）")
     all_injected = True
     for p in PROFILES:
-        config = Path(f"/root/.hermes/profiles/{p}/config.yaml")
+        config = Path(os.path.join(_hermes_home, "profiles", p, "config.yaml"))
         if not config.exists():
             print(f"  ? {p} config 不存在")
             continue

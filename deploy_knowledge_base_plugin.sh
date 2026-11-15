@@ -2,7 +2,7 @@
 # Deploy / verify the knowledge-base-search plugin (PRD §13, deploy step).
 #
 # Single source of truth: the plugin code lives ONLY in
-# /root/.hermes/plugins/knowledge-base-search/ (self-contained: the Hermes
+# $HERMES_HOME/plugins/knowledge-base-search/ (self-contained: the Hermes
 # tool/hook handlers AND the KB service layer co-located in one dir).
 # The host pool entry IS that directory — no symlink, no copy. Edit it in
 # place; the change takes effect on the next gateway load.
@@ -19,10 +19,12 @@ MODE="${1:---check}"
 [[ "$MODE" == "--check" || "$MODE" == "--apply" ]] || {
   echo "usage: $0 [--check|--apply]"; exit 2; }
 
-PLUG="/root/.hermes/plugins/knowledge-base-search"
-HOST_POOL="/root/.hermes/plugins"
+# 跨平台：优先 HERMES_HOME，fallback 到 $HOME/.hermes
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
+PLUG="$HERMES_HOME/plugins/knowledge-base-search"
+HOST_POOL="$HERMES_HOME/plugins"
 HOST_ENTRY="$HOST_POOL/knowledge-base-search"
-KB_DATA="/root/.hermes/kb-data"
+KB_DATA="$HERMES_HOME/kb-data"
 PROFILES=(coder orchestrator reviewer researcher product-manager data-engineer default)
 
 fail() { echo "  [FAIL] $*"; exit 1; }
@@ -68,7 +70,7 @@ fi
 echo "== profile injection (plugins.enabled append) =="
 PYBIN="$(command -v python3)"
 for p in "${PROFILES[@]}"; do
-  cfg="/root/.hermes/profiles/$p/config.yaml"
+  cfg="$HERMES_HOME/profiles/$p/config.yaml"
   if [[ ! -f "$cfg" ]]; then
     fail "missing profile config: $cfg"
   fi
@@ -115,6 +117,7 @@ ok "host entry resolved: $(readlink -f "$HOST_ENTRY")"
 
 # 7 profiles: append into existing plugins.enabled, preserving disabled/entries.
 PYBIN - <<'PYEOF'
+import os
 from pathlib import Path
 from ruamel.yaml import YAML
 
@@ -122,7 +125,7 @@ PROFILES = ["coder", "orchestrator", "reviewer", "researcher",
             "product-manager", "data-engineer", "default"]
 y = YAML()
 for p in PROFILES:
-    cfg = Path(f"/root/.hermes/profiles/{p}/config.yaml")
+    cfg = Path(f"{os.environ.get('HERMES_HOME', os.path.expanduser('~/.hermes'))}/profiles/{p}/config.yaml")
     data = y.load(open(cfg))
     plugins = data.setdefault("plugins", {})
     enabled = plugins.setdefault("enabled", [])

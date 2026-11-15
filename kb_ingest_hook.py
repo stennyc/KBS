@@ -154,7 +154,7 @@ def _clarify_state_store() -> Optional[Any]:
         from clarify_state import ClarifyStateStore
         import os
         from pathlib import Path
-        data_dir = os.environ.get("KB_DATA_DIR", "/root/.hermes/kb-data")
+        data_dir = os.environ.get("KB_DATA_DIR", os.path.join(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")), "kb-data"))
         return ClarifyStateStore(Path(data_dir))
     except Exception as exc:
         logger.debug("kb clarify-state sidecar unavailable: %s", exc)
@@ -491,7 +491,7 @@ def _service():
     _plugin_dir = os.path.dirname(os.path.abspath(__file__))
     if _plugin_dir not in sys.path:
         sys.path.insert(0, _plugin_dir)
-    _kb_dir = os.environ.get("KB_HOME", "/root/.hermes/plugins/knowledge-base-search")
+    _kb_dir = os.environ.get("KB_HOME", os.path.join(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")), "plugins", "knowledge-base-search"))
     if _kb_dir not in sys.path:
         sys.path.insert(0, _kb_dir)
 
@@ -508,9 +508,9 @@ def _service():
         init_mod = sys.modules.get(modname)
         if init_mod is not None and hasattr(init_mod, "_svc"):
             return init_mod._svc()
-    data_dir = Path(os.environ.get("KB_DATA_DIR", "/root/.hermes/kb-data"))
+    data_dir = Path(os.environ.get("KB_DATA_DIR", os.path.join(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")), "kb-data")))
     log_path = os.environ.get(
-        "KB_LOG_PATH", "/root/.hermes/logs/knowledge-base.log")
+        "KB_LOG_PATH", os.path.join(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")), "logs", "knowledge-base.log"))
     configure_logging(log_path)
     return KbSearchService(data_dir)
 
@@ -756,10 +756,11 @@ class _WriteSideState:
     def _docid_fn(self):
         import os
         import sys
+        from pathlib import Path
         _plugin_dir = os.path.dirname(os.path.abspath(__file__))
         if _plugin_dir not in sys.path:
             sys.path.insert(0, _plugin_dir)
-        _kb_dir = os.environ.get("KB_HOME", "/root/.hermes/plugins/knowledge-base-search")
+        _kb_dir = os.environ.get("KB_HOME", os.path.join(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")), "plugins", "knowledge-base-search"))
         if _kb_dir not in sys.path:
             sys.path.insert(0, _kb_dir)
         from kb_service import _deterministic_docid
@@ -1858,7 +1859,7 @@ def _custom_topics() -> tuple:
     import os as _os
     from pathlib import Path as _Path
     p = _Path(_os.environ.get("KB_DATA_DIR",
-                              "/root/.hermes/kb-data")) / "custom_topics.jsonl"
+                              _os.path.join(_os.environ.get("HERMES_HOME", str(_Path.home() / ".hermes")), "kb-data"))) / "custom_topics.jsonl"
     if not p.exists():
         return ()
     try:
