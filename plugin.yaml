@@ -16,3 +16,4 @@ config_schema:
     default: {}
     label: "Shared memory (central)"
     description: "中央 shared-memory 面配置：enabled / agent_id / token / pg{host,port,db,user,password}。代码直读宿主 config.yaml 的 plugins.entries.knowledge-base-search.shared_memory 段（与面板保存路径一致），缺段或 enabled!=true 时该面 no-op。"
+schema: legacy_nested
