@@ -84,29 +84,47 @@ def _load_shared_memory_config() -> Optional[Dict[str, Any]]:
     try:
         entries = (parsed or {}).get("plugins", {}).get("entries", {})
         kb = entries.get("knowledge-base-search") or {}
-        # Panel (settings hub) saves to .settings.shared_memory; the legacy
-        # path is .shared_memory. Prefer the panel path so edits in the
-        # Settings UI are honored; fall back to the legacy key for
-        # deployments that only have the old layout.
-        sm = (kb.get("settings") or {}).get("shared_memory")
-        if not isinstance(sm, dict):
-            sm = kb.get("shared_memory")
-        if not isinstance(sm, dict) or not sm.get("enabled"):
-            return None
-        pg = sm.get("pg") or {}
-        agent_id = str(sm.get("agent_id") or "").strip()
-        if not agent_id or not pg.get("host") or not pg.get("db"):
+        settings = kb.get("settings") or {}
+        # Three read paths, in priority order:
+        # 1. Panel-saved scalar keys (.settings.sm_enabled, .settings.sm_agent_id, …)
+        #    — the current config_schema shape (independent fields, not a dict).
+        # 2. Legacy .settings.shared_memory (dict) — intermediate shape.
+        # 3. Legacy .shared_memory (dict) — original direct-entry layout.
+        if "sm_enabled" in settings:
+            enabled = bool(settings.get("sm_enabled", True))
+            if not enabled:
+                return None
+            agent_id = str(settings.get("sm_agent_id") or "").strip()
+            token = str(settings.get("sm_token") or "")
+            pg = {
+                "host": str(settings.get("sm_pg_host") or ""),
+                "port": int(settings.get("sm_pg_port") or 5432),
+                "db": str(settings.get("sm_pg_db") or ""),
+                "user": str(settings.get("sm_pg_user") or ""),
+                "password": str(settings.get("sm_pg_password") or ""),
+            }
+        else:
+            sm = settings.get("shared_memory")
+            if not isinstance(sm, dict):
+                sm = kb.get("shared_memory")
+            if not isinstance(sm, dict) or not sm.get("enabled"):
+                return None
+            agent_id = str(sm.get("agent_id") or "").strip()
+            token = str(sm.get("token") or "")
+            pg_raw = sm.get("pg") or {}
+            pg = {
+                "host": str(pg_raw.get("host") or ""),
+                "port": int(pg_raw.get("port") or 5432),
+                "db": str(pg_raw.get("db") or ""),
+                "user": str(pg_raw.get("user") or ""),
+                "password": str(pg_raw.get("password") or ""),
+            }
+        if not agent_id or not pg["host"] or not pg["db"]:
             return None
         return {
             "agent_id": agent_id,
-            "token": str(sm.get("token") or ""),
-            "pg": {
-                "host": str(pg.get("host")),
-                "port": int(pg.get("port") or 5432),
-                "db": str(pg.get("db")),
-                "user": str(pg.get("user")),
-                "password": str(pg.get("password") or ""),
-            },
+            "token": token,
+            "pg": pg,
         }
     except Exception as e:
         logger.warning(f"kb shared_memory: config parse failed, no-op: {e}")
