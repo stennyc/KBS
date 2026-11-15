@@ -4,6 +4,49 @@
 >
 > **许可**：GPL-3.0-or-later（copyleft，衍生作品同许可），**非商用自由使用；商用需向作者购买授权**。详见 [License 节](#许可)。
 
+
+## Installation
+
+### Linux
+
+```bash
+# Clone to Hermes plugin directory
+git clone https://github.com/stennyc/KBS.git ~/.hermes/plugins/knowledge-base-search
+
+# Auto-install to all profiles that have it enabled in config.yaml:
+bash ~/.hermes/plugins/knowledge-base-search/install.sh --all-profiles
+```
+
+### Windows (PowerShell)
+
+```powershell
+# Clone to both plugin directories (AppData + ~/.hermes)
+git clone https://stennyc@github.com/stennyc/KBS.git "C:\Users\$env:USERNAME\AppData\Local\hermes\plugins\knowledge-base-search"
+& "C:\Users\$env:USERNAME\AppData\Local\hermes\plugins\knowledge-base-search\install.ps1" -AllProfiles
+```
+
+### Enable in profile config
+
+Add `knowledge-base-search` to `plugins.enabled` in the target profile's `config.yaml`:
+
+```yaml
+plugins:
+  enabled:
+  - filemem
+  - knowledge-base-search
+  # ... other plugins
+```
+
+Then restart the Hermes gateway.
+
+### Dual-path note (Windows)
+
+Hermes on Windows stores plugins in two locations:
+- `C:\Users\<user>\AppData\Local\hermes\plugins\` (primary, loaded at runtime)
+- `~/.hermes/plugins/` (sync copy, used by some tools)
+
+The install scripts above copy to **both** locations automatically.
+
 ## 这是什么
 
 一个本地 rank_bm25 检索服务，分两层：

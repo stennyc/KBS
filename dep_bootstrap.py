@@ -28,39 +28,58 @@ its own site-packages gets a no-op.
 from __future__ import annotations
 
 import importlib.util
+import glob
 import os
 import sys
+from pathlib import Path
 
-_FALLBACK_SITE_DIRS: list[str] = []
+
+def _find_hermes_managed_venv(hermes_home: str) -> str | None:
+    """Return the venv path stored in Hermes' ``facts.json``."""
+    installs_dir = os.path.join(hermes_home, "installs")
+    if not os.path.isdir(installs_dir):
+        return None
+    for key_dir in os.listdir(installs_dir):
+        facts_path = os.path.join(installs_dir, key_dir, "facts.json")
+        if not os.path.isfile(facts_path):
+            continue
+        try:
+            import json
+            with open(facts_path, encoding="utf-8-sig") as f:
+                facts = json.load(f)
+            venv = facts.get("packages", {}).get("venv", {}).get("environment")
+            if venv and os.path.isdir(venv):
+                return venv
+        except (json.JSONDecodeError, OSError, KeyError):
+            continue
+    return None
 
 
 def _find_dep_dirs() -> list[str]:
     """Every candidate site-packages dir to splice, highest priority first:
-    1. the KB_DEP_SITES env override ('=' separated, if set) — the only way a
-       host that genuinely lacks these packages can point us at the right
-       venv without us guessing;
-    2. the CURRENT interpreter's own site-packages dir (sysconfig
-       "purelib") — derived live, never hardcoded, so it tracks whatever venv
-       the running process actually lives in (survives any venv migration /
-       Python minor upgrade without a code change). This is the only
-       reliable "fallback" — a hardcoded path here (e.g. an old shared dev
-       venv's location) would silently rot out the moment that venv moves,
-       which is exactly the 2026-11-11 flaky's original root cause.
-
-    Existence is checked by the caller (the os.path.isdir guard inside
-    ensure_kb_dep_paths / ensure_pg_dep_paths) so a missing/rotten candidate
-    dir is silently skipped rather than spliced as a dead path."""
+    1. the KB_DEP_SITES env override ('=' separated, if set);
+    2. Hermes-managed venv from ``facts.json`` — canonical, auto-detected;
+    3. the CURRENT interpreter's own site-packages dir (sysconfig
+       "purelib") — derived live, never hardcoded, as last resort.
+    """
     dirs: list[str] = []
     override = os.environ.get("KB_DEP_SITES")
     if override:
         dirs.extend(d for d in override.split("=") if d)
+
+    hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+    managed = _find_hermes_managed_venv(hermes_home)
+    if managed:
+        for pattern in [os.path.join(managed, "lib", "python*", "site-packages"),
+                        os.path.join(managed, "Lib", "site-packages")]:
+            found = glob.glob(pattern)
+            dirs.extend(d for d in found if os.path.isdir(d))
+
     try:
         import sysconfig
         dirs.append(sysconfig.get_paths()["purelib"])
     except Exception:
-        pass  # sysconfig unavailable (shouldn't happen in any sane host) —
-        # nothing sensible to do, just skip this candidate.
-    dirs.extend(_FALLBACK_SITE_DIRS)
+        pass
     return dirs
 
 
