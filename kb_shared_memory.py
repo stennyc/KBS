@@ -262,12 +262,12 @@ def _parse_kb_shared_memory_minimal(raw: str) -> Dict[str, Any]:
 def _ensure_pg_dep_paths() -> None:
     """Make psycopg2 importable from the running interpreter.
 
-    Superseded by dep_bootstrap.ensure_pg_dep_paths (shared single source of
+    Superseded by kbs_dep_bootstrap.ensure_pg_dep_paths (shared single source of
     truth, 2026-11-11) — kept as a thin re-export wrapper so any existing
     caller/referencer of this exact name still resolves; the actual splice
-    logic now lives in dep_bootstrap."""
-    import dep_bootstrap
-    dep_bootstrap.ensure_pg_dep_paths()
+    logic now lives in kbs_dep_bootstrap."""
+    import kbs_dep_bootstrap
+    kbs_dep_bootstrap.ensure_pg_dep_paths()
 
 
 _ensure_pg_dep_paths()

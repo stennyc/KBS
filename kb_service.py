@@ -54,9 +54,9 @@ from typing import Any, Dict, List, Optional
 # side effect of importing kb_service itself, regardless of which face
 # (host in-process, test subprocess worker, future caller) imports it.
 # No-op when the host already resolves both packages.
-import dep_bootstrap
+import kbs_dep_bootstrap
 
-dep_bootstrap.ensure_kb_dep_paths()
+kbs_dep_bootstrap.ensure_kb_dep_paths()
 
 from hot_layer import HotLayerBackend
 from cold_layer import PyterrierBackend

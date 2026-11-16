@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from dep_bootstrap import resolve_hermes_home  # noqa: E402
+from kbs_dep_bootstrap import resolve_hermes_home  # noqa: E402
 
 # runbook 唯一入口三件套：pin 解释器 / 共享数据目录 / 共享 로그（与 plugin
 # 适配器同一套 env 约定：KB_PY_BIN / KB_DATA_DIR / KB_LOG_PATH）。

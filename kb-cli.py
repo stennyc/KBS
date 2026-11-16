@@ -36,7 +36,7 @@ _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
-from dep_bootstrap import resolve_hermes_home  # noqa: E402
+from kbs_dep_bootstrap import resolve_hermes_home  # noqa: E402
 
 # Keep the service / data-dir resolution identical to the tool face so a CLI
 # ingest lands in the same corpus (same lock, same seq, same hot/cold split).

@@ -95,12 +95,12 @@ from handler_args import _normalize_handler_args
 def _ensure_kb_dep_paths() -> None:
     """Make rank_bm25 + jieba importable from the running interpreter.
 
-    Superseded by dep_bootstrap.ensure_kb_dep_paths (shared single source of
+    Superseded by kbs_dep_bootstrap.ensure_kb_dep_paths (shared single source of
     truth, 2026-11-11) — kept as a thin re-export wrapper so any existing
     caller/referencer of this exact name still resolves; the actual splice
-    logic now lives in dep_bootstrap."""
-    import dep_bootstrap
-    dep_bootstrap.ensure_kb_dep_paths()
+    logic now lives in kbs_dep_bootstrap."""
+    import kbs_dep_bootstrap
+    kbs_dep_bootstrap.ensure_kb_dep_paths()
 
 
 _ensure_kb_dep_paths()

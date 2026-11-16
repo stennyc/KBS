@@ -7,7 +7,7 @@ dir onto sys.path, so kb_service's transitive third-party imports
   - a bare `from kb_service import ...` (e.g. the test subprocess workers in
     test_kb_rerank_reinforce.py) -> this module is what kb_service now imports
     FIRST, so the splice happens before hot_layer's `from rank_bm25 import ...`;
-  - a future new calling face -> just import dep_bootstrap first (or import
+  - a future new calling face -> just import kbs_dep_bootstrap first (or import
     kb_service, which already does).
 
 Before this module, "whoever calls us must remember to splice the venv
