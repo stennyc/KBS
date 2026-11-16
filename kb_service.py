@@ -65,8 +65,14 @@ from search_backend import SearchBackendError, SearchResult
 from staging import StagingStore
 
 # kbs owns its own flock shim (Windows-compatible). No global fcntl dependency.
+# Dual-path import: relative under the host loader (plugin as a package),
+# bare under the CLI / test face (plugin dir directly on sys.path) — the
+# same pattern kb_ingest_hook uses.
 import types
-from ._fcntl import flock, LOCK_SH, LOCK_EX, LOCK_NB, LOCK_UN
+try:
+    from ._fcntl import flock, LOCK_SH, LOCK_EX, LOCK_NB, LOCK_UN
+except ImportError:
+    from _fcntl import flock, LOCK_SH, LOCK_EX, LOCK_NB, LOCK_UN
 fcntl = types.SimpleNamespace(flock=flock, LOCK_SH=LOCK_SH, LOCK_EX=LOCK_EX, LOCK_NB=LOCK_NB, LOCK_UN=LOCK_UN)
 
 # Lock + write-epoch marker live in the DATA dir (deploy-created), not the repo.
