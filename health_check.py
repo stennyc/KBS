@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from kbs_dep_bootstrap import resolve_hermes_home  # noqa: E402
+from kbs_dep_bootstrap import resolve_hermes_home, resolve_kb_data_dir  # noqa: E402
 
 # runbook 唯一入口三件套：pin 解释器 / 共享数据目录 / 共享 로그（与 plugin
 # 适配器同一套 env 约定：KB_PY_BIN / KB_DATA_DIR / KB_LOG_PATH）。
@@ -42,7 +42,10 @@ else:
     _candidates = sorted(glob.glob(os.path.join(_hermes_home, "tools", "*", "bin", "python3.14")))
     _DEFAULT_PY_BIN = _candidates[0] if _candidates else sys.executable
 PIN_PY_BIN = os.environ.get("KB_PY_BIN", _DEFAULT_PY_BIN)
-DATA_DIR = Path(os.environ.get("KB_DATA_DIR", os.path.join(_hermes_home, "kb-data")))
+# Shared corpus dir: AUTO-DETECTS to ONE host tree (KB_DATA_DIR pin >
+# platform-native home > HERMES_HOME) — the 2026-11-17 split-brain fix, so
+# the runbook probes the SAME corpus the plugin adapter writes.
+DATA_DIR = Path(resolve_kb_data_dir())
 LOG_PATH = os.environ.get(
     "KB_LOG_PATH", os.path.join(_hermes_home, "logs", "knowledge-base.log"),
 )

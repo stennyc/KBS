@@ -63,6 +63,57 @@ def resolve_hermes_home() -> str:
     return os.path.expanduser("~/.hermes")
 
 
+def detect_native_hermes_home() -> str | None:
+    """The platform-native canonical hermes home, AUTO-DETECTED — no
+    hard-coded absolute paths, only the platform's own env vars + home:
+
+      - Windows: ``%LOCALAPPDATA%\\hermes`` (the installer's data home;
+        the Windows-native docs' data layout makes it the canonical tree)
+      - POSIX: ``~/.hermes``
+
+    Returns the path only when it EXISTS on disk; None on a fresh or
+    relocated host so callers fall back to the per-process HERMES_HOME.
+    """
+    if sys.platform == "win32":
+        localapp = os.environ.get("LOCALAPPDATA", "").strip()
+        if localapp:
+            candidate = os.path.join(localapp, "hermes")
+            if os.path.isdir(candidate):
+                return candidate
+        return None
+    candidate = os.path.expanduser("~/.hermes")
+    if os.path.isdir(candidate):
+        return candidate
+    return None
+
+
+def resolve_kb_data_dir() -> str:
+    """The shared KB corpus dir: ONE per host, auto-detected.
+
+    Split-brain fix (2026-11-17): a relay-side process (HERMES_HOME=
+    ``~/.hermes``) and the gateway side (HERMES_HOME=``%LOCALAPPDATA%\\hermes``)
+    each resolved kb-data into their OWN tree — the same doc was ingested
+    into both. Owner ruling: converge via auto-detection, no hard-coded
+    paths. Rule:
+
+      1. ``KB_DATA_DIR`` env var = an explicit pin, supersedes everything;
+      2. the platform-native canonical home (``detect_native_hermes_home``)
+        owns the shared KB — every process that loads this plugin lands on
+        the SAME tree, regardless of its own HERMES_HOME;
+      3. the ``HERMES_HOME`` env var only when no native tree exists on
+        disk (fresh host / relocated install) — reuses
+        ``resolve_hermes_home`` so the last-resort default stays in ONE
+        place.
+    """
+    explicit = os.environ.get("KB_DATA_DIR", "").strip()
+    if explicit:
+        return explicit
+    native = detect_native_hermes_home()
+    if native:
+        return os.path.join(native, "kb-data")
+    return os.path.join(resolve_hermes_home(), "kb-data")
+
+
 def _find_hermes_managed_venv(hermes_home: str) -> str | None:
     """Return the venv path stored in Hermes' ``facts.json``."""
     installs_dir = os.path.join(hermes_home, "installs")

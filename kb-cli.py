@@ -36,12 +36,15 @@ _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
-from kbs_dep_bootstrap import resolve_hermes_home  # noqa: E402
+from kbs_dep_bootstrap import resolve_hermes_home, resolve_kb_data_dir  # noqa: E402
 
 # Keep the service / data-dir resolution identical to the tool face so a CLI
 # ingest lands in the same corpus (same lock, same seq, same hot/cold split).
+# The corpus dir AUTO-DETECTS to ONE host tree (KB_DATA_DIR pin > platform-
+# native home > HERMES_HOME) — the 2026-11-17 split-brain fix; the per-process
+# home (_hermes_home) still drives the audit/log facets below.
 _hermes_home = resolve_hermes_home()
-_DATA_DIR = Path(os.environ.get("KB_DATA_DIR", os.path.join(_hermes_home, "kb-data")))
+_DATA_DIR = Path(resolve_kb_data_dir())
 _AUDIT_PATH = os.environ.get(
     "KB_AUDIT_PATH",
     os.path.join(_hermes_home,

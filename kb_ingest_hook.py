@@ -59,6 +59,7 @@ try:
     )
     from .kb_distill import distill_content as _distill_content
     from .kb_distill import LLM_CALL_TIMEOUT as _LLM_JUDGE_TIMEOUT
+    from .kbs_dep_bootstrap import resolve_kb_data_dir as _resolve_kb_data_dir
 except ImportError:
     from kb_ingest_rules import (
         Candidate, CandidateDetector, ClarifyAggregator, dry_run_log,
@@ -66,6 +67,7 @@ except ImportError:
     )
     from kb_distill import distill_content as _distill_content
     from kb_distill import LLM_CALL_TIMEOUT as _LLM_JUDGE_TIMEOUT
+    from kbs_dep_bootstrap import resolve_kb_data_dir as _resolve_kb_data_dir
 
 # Cross-platform HERMES_HOME resolver (sibling from __init__; mirrors
 # dep_bootstrap._resolve_hermes_home in filemem — same pattern, local copy
@@ -170,9 +172,8 @@ def _clarify_state_store() -> Optional[Any]:
     """
     try:
         from clarify_state import ClarifyStateStore
-        import os
         from pathlib import Path
-        data_dir = os.environ.get("KB_DATA_DIR", os.path.join(_resolve_hermes_home(), "kb-data"))
+        data_dir = _resolve_kb_data_dir()
         return ClarifyStateStore(Path(data_dir))
     except Exception as exc:
         logger.debug("kb clarify-state sidecar unavailable: %s", exc)
@@ -532,7 +533,11 @@ def _service():
         init_mod = sys.modules.get(modname)
         if init_mod is not None and hasattr(init_mod, "_svc"):
             return init_mod._svc()
-    data_dir = Path(os.environ.get("KB_DATA_DIR", os.path.join(_resolve_hermes_home(), "kb-data")))
+    # The shared corpus converges on ONE host tree (auto-detect: KB_DATA_DIR
+    # pin > platform-native home > HERMES_HOME) — the 2026-11-17 split-brain
+    # fix. The AUDIT LOG stays per-process-home: it is per-run history, not
+    # shared state, so it still follows _resolve_hermes_home().
+    data_dir = Path(_resolve_kb_data_dir())
     log_path = os.environ.get(
         "KB_LOG_PATH", os.path.join(_resolve_hermes_home(), "logs", "knowledge-base.log"))
     configure_logging(log_path)
@@ -1880,10 +1885,8 @@ def _custom_topics() -> tuple:
     kb-data/custom_topics.jsonl. Loaded fresh per call so the owner can
     add a new project tag WITHOUT a code deploy. Fail-soft: missing /
     unreadable file -> (). Case-sensitive (same as TOPIC_VOCAB)."""
-    import os as _os
     from pathlib import Path as _Path
-    p = _Path(_os.environ.get("KB_DATA_DIR",
-                              _os.path.join(_resolve_hermes_home(), "kb-data"))) / "custom_topics.jsonl"
+    p = _Path(_resolve_kb_data_dir()) / "custom_topics.jsonl"
     if not p.exists():
         return ()
     try:
