@@ -21,12 +21,15 @@ def _import_kb_shared_memory():
 
 @contextmanager
 def _with_fake_config_yaml(sm, yaml_text):
-    real = sm._read_config_yaml_text
-    sm._read_config_yaml_text = lambda: yaml_text
+    """Pretend config.yaml resolves to `yaml_text`. The P0-F5 mtime cache
+    keys on the SOURCE path's stat — the fake path ('fake-path') has no
+    stat, so key=None and the cache is bypassed (legacy parse, per-call)."""
+    real = sm._read_config_yaml_source
+    sm._read_config_yaml_source = lambda: (yaml_text, "fake-path")
     try:
         yield
     finally:
-        sm._read_config_yaml_text = real
+        sm._read_config_yaml_source = real
 
 
 _PANEL_CFG = (

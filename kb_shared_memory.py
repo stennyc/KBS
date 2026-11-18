@@ -35,7 +35,9 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,22 @@ logger = logging.getLogger(__name__)
 # 不进共识召回 — 仅模型显式 confirmed_only=false 翻全量时查得到 (只推不自动注入,
 # 可读可参考, 跟 filemem 方式一致).
 CONSENSUS_DOC_KINDS: tuple = ("reference", "material", "tutorial")
+
+
+# ── 2026-11-18 P0-F5 sm-config mtime-gate cache (mirror of filemem's
+# _shared_mem_cfg precedent) ───────────────────────────────────────────────
+_SM_CFG_CACHE: Dict[Any, Any] = {}
+_SM_CFG_CACHE_MAX = 2
+_SM_CFG_CACHE_LOCK = threading.Lock()
+_SM_CFG_MISS = object()  # sentinel: a cached None result is a HIT, not a miss
+
+
+def kb_perf_cache_enabled() -> bool:
+    """KBS_PERF_CACHE=off (or 0/false) disables the sm-config mtime gate
+    (legacy per-call full read+parse cost; the canary's A/B reference leg
+    AND the ops kill-switch)."""
+    return os.environ.get("KBS_PERF_CACHE", "on").strip().lower() \
+        not in ("off", "0", "false")
 
 
 def _load_shared_memory_config() -> Optional[Dict[str, Any]]:
@@ -66,10 +84,41 @@ def _load_shared_memory_config() -> Optional[Dict[str, Any]]:
     下沉 source_profile 行级列, agent_id 是机器级 (跨机 50 台 = 50 个
     agent_id), 不是 per-profile。读序: HERMES_CONFIG env 优先 -> global
     <HERMES_HOME>/config.yaml -> per-profile (HERMES_PROFILE 有值时兜底)。
-    全缺 -> None (no-op, 本地字节级不变)。"""
-    raw = _read_config_yaml_text()
+    全缺 -> None (no-op, 本地字节级不变)。
+
+    2026-11-18 P0-F5 (kbs 镜像 filemem 先例): mtime+size 门控缓存 — kbs
+    的 pre_llm_call face 每 turn 最多 2 次全文读+YAML 解析 config, 只为
+    决定一行 referral hint。缓存结果(含 None 结果, 纯文件字节函数)按
+    (路径, mtime_ns, size) 键; 面板/手写改 config 必落新 mtime => 立即
+    失效, 零召回差异。KBS_PERF_CACHE=off 走旧成本。"""
+    raw, src = _read_config_yaml_source()
     if raw is None:
         return None
+    key = None
+    if kb_perf_cache_enabled():
+        try:
+            st = Path(src).stat()
+            key = (src, st.st_mtime_ns, st.st_size)
+            with _SM_CFG_CACHE_LOCK:
+                hit = _SM_CFG_CACHE.get(key, _SM_CFG_MISS)
+            if hit is not _SM_CFG_MISS:
+                return hit
+        except OSError:
+            key = None
+    result = _parse_shared_memory_config(raw)
+    if key is not None:
+        with _SM_CFG_CACHE_LOCK:
+            _SM_CFG_CACHE[key] = result
+            if len(_SM_CFG_CACHE) > _SM_CFG_CACHE_MAX:
+                for _old in list(_SM_CFG_CACHE)[:len(_SM_CFG_CACHE) - _SM_CFG_CACHE_MAX]:
+                    del _SM_CFG_CACHE[_old]
+    return result
+
+
+def _parse_shared_memory_config(raw: str) -> Optional[Dict[str, Any]]:
+    """The parse+extract body of _load_shared_memory_config (ruamel ->
+    pyyaml -> minimal, three-layer read, placeholder resolution). Isolated
+    so the P0-F5 mtime cache can wrap it without duplicating the body."""
     parsed: Optional[Dict[str, Any]] = None
     try:
         from ruamel.yaml import YAML
@@ -149,8 +198,11 @@ def _resolve_env_placeholder(v: Any) -> Any:
     return v
 
 
-def _read_config_yaml_text() -> Optional[str]:
+def _read_config_yaml_source() -> Tuple[Optional[str], Optional[str]]:
     """定位并读 config.yaml 全文 (owner 定稿 2026-10-23, 机器级 agent_id).
+    Returns (text, source_path) — the P0-F5 cache keys on source_path's
+    mtime+size. text is None when no config source resolves (no-op leg).
+    (The legacy _read_config_yaml_text name now delegates to this.)
 
     读序: 1. HERMES_CONFIG env  2. <HERMES_HOME>/config.yaml (global,
     机器级 — multiplex 宿主无 HERMES_PROFILE env, 本机 12 profile 共用一份
@@ -161,12 +213,12 @@ def _read_config_yaml_text() -> Optional[str]:
     if explicit and os.path.isfile(explicit):
         try:
             with open(explicit, "r", encoding="utf-8") as f:
-                return f.read()
+                return f.read(), explicit
         except Exception:
-            return None
+            return None, None
     home = os.environ.get("HERMES_HOME", "").strip()
     if not home:
-        return None
+        return None, None
     candidates = [f"{home}/config.yaml"]
     profile = os.environ.get("HERMES_PROFILE", "").strip()
     if profile:
@@ -175,10 +227,15 @@ def _read_config_yaml_text() -> Optional[str]:
         if os.path.isfile(p):
             try:
                 with open(p, "r", encoding="utf-8") as f:
-                    return f.read()
+                    return f.read(), p
             except Exception:
                 continue
-    return None
+    return None, None
+
+
+def _read_config_yaml_text() -> Optional[str]:
+    """Legacy name (pre-P0-F5): the text half of _read_config_yaml_source."""
+    return _read_config_yaml_source()[0]
 
 
 def _parse_kb_shared_memory_minimal(raw: str) -> Dict[str, Any]:
