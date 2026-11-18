@@ -121,6 +121,9 @@ def _load_shared_memory_config() -> Optional[Dict[str, Any]]:
                 "password": str(pg_raw.get("password") or ""),
                 "sslmode": str(pg_raw.get("sslmode") or "prefer"),
             }
+        token = _resolve_env_placeholder(token)
+        for _k in ("host", "db", "user", "password", "sslmode"):
+            pg[_k] = _resolve_env_placeholder(pg[_k])
         if not agent_id or not pg["host"] or not pg["db"]:
             return None
         return {
@@ -131,6 +134,19 @@ def _load_shared_memory_config() -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.warning(f"kb shared_memory: config parse failed, no-op: {e}")
         return None
+
+
+def _resolve_env_placeholder(v: Any) -> Any:
+    """模板占位符 ${VAR} -> os.environ[VAR] (owner 定案 2026-11-18, kbs 镜像
+    filemem): 公开仓模板默认值 ${SM_TOKEN} / ${SM_PG_PASSWORD}; 活配置
+    真实值原样通过。未设 env -> 空串 (中央门关, 本地零影响)。"""
+    if isinstance(v, str):
+        import os
+        import re
+        m = re.fullmatch(r"\s*\$\{([A-Z][A-Z0-9_]*)\}\s*", v)
+        if m:
+            return os.environ.get(m.group(1), "")
+    return v
 
 
 def _read_config_yaml_text() -> Optional[str]:
