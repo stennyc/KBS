@@ -22,6 +22,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from kb_service import KbSearchService  # noqa: E402
 
+# fork is POSIX-only: on Windows (spawn) the peer-writer cases below raise
+# ValueError, so they are skipped there — the subprocess-based
+# test_multiproc suite covers the same cross-process semantics on all
+# platforms.
+_FORK_OK = "fork" in multiprocessing.get_all_start_methods()
+
 
 def _fresh_data_dir() -> Path:
     base = Path(tempfile.mkdtemp())
@@ -33,6 +39,7 @@ def _fresh_data_dir() -> Path:
 class RefreshVisibilityTests(unittest.TestCase):
     """纯读实例 + 子进程写入 + refresh() -> 立刻可见（无其他写操作介入）。"""
 
+    @unittest.skipUnless(_FORK_OK, "fork start method is POSIX-only")
     def test_read_only_instance_sees_peer_write_after_refresh(self):
         data_dir = _fresh_data_dir()
         # 长活"纯读"实例：创建后只做 search()，不做任何 ingest/confirm/persist
@@ -75,6 +82,7 @@ class RefreshVisibilityTests(unittest.TestCase):
             "after refresh(), the read-only instance must see the peer's "
             "confirmed doc without any write-path call of its own")
 
+    @unittest.skipUnless(_FORK_OK, "fork start method is POSIX-only")
     def test_refresh_also_rebases_staging_face(self):
         data_dir = _fresh_data_dir()
         reader = KbSearchService(data_dir)

@@ -269,14 +269,16 @@ class DocKindCorpusRegressionTests(unittest.TestCase):
     真实语料上 doc_kind=None 增量零漂移。
 
     需要 KB_REGRESSION_DATA_DIR 环境变量指向真实数据目录（默认
-    /root/.hermes/kb-data）；该目录不存在则 skip（CI 沙箱走上面 4 条
+    $HERMES_HOME/kb-data，无 HERMES_HOME 时回退 ~/.hermes/kb-data）；
+    该目录不存在则 skip（CI 沙箱走上面 4 条
     temp 语料不变式测试，真实语料回归是 owner 本地增强项）。
     """
 
     def test_regression_no_new_drift(self):
         import os
-        data_dir = Path(os.environ.get("KB_REGRESSION_DATA_DIR",
-                                       "/root/.hermes/kb-data"))
+        _hh = os.environ.get("HERMES_HOME", "").strip()
+        default_dir = os.path.join(_hh or os.path.expanduser("~/.hermes"), "kb-data")
+        data_dir = Path(os.environ.get("KB_REGRESSION_DATA_DIR", default_dir))
         if not (data_dir / "hot_corpus.pkl").exists():
             self.skipTest(f"no real KB corpus at {data_dir}")
         n = regression_no_new_drift(data_dir)

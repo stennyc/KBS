@@ -18,13 +18,15 @@ Covers the room's acceptance criteria:
 import sys
 import importlib.util
 import json
+import os
 import tempfile
 from pathlib import Path
 
 import pytest
 
-PLUGIN_DIR = "/root/.hermes/plugins/knowledge-base-search"
-KB_DIR = "/root/.hermes/plugins/knowledge-base-search"
+_PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+PLUGIN_DIR = os.environ.get("KB_HOME", str(_PLUGIN_ROOT))
+KB_DIR = os.environ.get("KB_HOME", str(_PLUGIN_ROOT))
 for p in (PLUGIN_DIR, KB_DIR):
     if p not in sys.path:
         sys.path.insert(0, p)

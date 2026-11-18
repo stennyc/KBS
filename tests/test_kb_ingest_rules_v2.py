@@ -19,9 +19,12 @@ Covers:
 Run: PYTHONPATH=/usr/local/lib/hermes-agent pytest test_kb_ingest_rules_v2.py -q
 """
 
+import os
 import sys
+from pathlib import Path
 
-PLUGIN_DIR = "/root/.hermes/plugins/knowledge-base-search"
+_PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+PLUGIN_DIR = os.environ.get("KB_HOME", str(_PLUGIN_ROOT))
 if PLUGIN_DIR not in sys.path:
     sys.path.insert(0, PLUGIN_DIR)
 

@@ -25,8 +25,20 @@ from pathlib import Path
 
 import yaml
 
-_GLOBAL_CONFIG = Path("/root/.hermes/config.yaml")
-_PROFILE_CONFIGS = sorted(glob.glob("/root/.hermes/profiles/*/config.yaml"))
+# Hermes home resolution mirrors the plugin source (kbs_dep_bootstrap):
+# per-profile HERMES_HOME env first, else ~/.hermes. This test audits the
+# HOST's home layout; a host without that tree skips instead of failing.
+import os
+
+def _resolve_hermes_home() -> Path:
+    hh = os.environ.get("HERMES_HOME", "").strip()
+    if hh:
+        return Path(hh)
+    return Path(os.path.expanduser("~/.hermes"))
+
+_HERMES_HOME = _resolve_hermes_home()
+_GLOBAL_CONFIG = _HERMES_HOME / "config.yaml"
+_PROFILE_CONFIGS = sorted(glob.glob(str(_HERMES_HOME / "profiles" / "*" / "config.yaml")))
 
 PLUGIN_ID = "knowledge-base-search"
 REQUIRED_CAP = "tools.override"
@@ -50,6 +62,11 @@ def _granted_caps(config_path: Path) -> list:
 
 class KbToolOverrideGrantTests(unittest.TestCase):
     """Every home that enables the kb plugin must grant tools.override."""
+
+    def setUp(self):
+        # Host-layout audit: only meaningful where the home tree exists.
+        if not _GLOBAL_CONFIG.is_file():
+            self.skipTest(f"no Hermes home config at {_GLOBAL_CONFIG}")
 
     def test_global_home_has_kb_entry(self):
         entry = _kb_entry(_GLOBAL_CONFIG)

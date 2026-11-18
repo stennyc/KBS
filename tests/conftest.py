@@ -26,3 +26,20 @@ import sys
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+
+# ---------------------------------------------------------------------------
+# Test isolation: the suite must run hermetically on ANY host.
+#
+# On a live Hermes host the gateway injects HERMES_HOME (per-profile) plus
+# HERMES_SESSION_* / HERMES_AGENT / _HERMES_GATEWAY into every child shell —
+# and the plugin source (kbs_dep_bootstrap.resolve_kb_data_dir and friends)
+# honors that env. Unsanitized, the hook/refresh tests resolve the KB data
+# dir into the profile home and trip the "dir does not exist" startup guard
+# instead of exercising their own temp dirs. Drop ONLY the env that steers
+# the plugin's home/data-dir resolution; the tests' own monkeypatched
+# KB_DATA_DIR / KB_LOG_PATH pins are set per-test, after this.
+# ---------------------------------------------------------------------------
+for _k in ("HERMES_HOME", "HERMES_SESSION_ID", "HERMES_SESSION_USER_ID",
+           "HERMES_AGENT", "_HERMES_GATEWAY", "HERMES_SESSION_PROFILE",
+           "KB_DATA_DIR", "KB_LOG_PATH", "KB_AUDIT_PATH"):
+    os.environ.pop(_k, None)
