@@ -102,6 +102,7 @@ def _load_shared_memory_config() -> Optional[Dict[str, Any]]:
                 "db": str(settings.get("sm_pg_db") or ""),
                 "user": str(settings.get("sm_pg_user") or ""),
                 "password": str(settings.get("sm_pg_password") or ""),
+                "sslmode": str(settings.get("sm_pg_sslmode") or "prefer"),
             }
         else:
             sm = settings.get("shared_memory")
@@ -118,6 +119,7 @@ def _load_shared_memory_config() -> Optional[Dict[str, Any]]:
                 "db": str(pg_raw.get("db") or ""),
                 "user": str(pg_raw.get("user") or ""),
                 "password": str(pg_raw.get("password") or ""),
+                "sslmode": str(pg_raw.get("sslmode") or "prefer"),
             }
         if not agent_id or not pg["host"] or not pg["db"]:
             return None
@@ -176,7 +178,7 @@ def _parse_kb_shared_memory_minimal(raw: str) -> Dict[str, Any]:
     _sm_indent = 0
     _entries_indent = 0
     _SM_KEYS = {"enabled", "agent_id", "token"}
-    _PG_KEYS = {"host", "port", "db", "user", "password"}
+    _PG_KEYS = {"host", "port", "db", "user", "password", "sslmode"}
     anchor_pg: Optional[Dict[str, Any]] = None  # &id001 定义处的五键
 
     def _scalar(v: str):
@@ -281,6 +283,7 @@ class _PgConn:
         self._conn = psycopg2.connect(
             host=pg["host"], port=int(pg["port"]), dbname=pg["db"],
             user=pg["user"], password=pg["password"],
+            sslmode=str(pg.get("sslmode") or "prefer"),
             connect_timeout=5,
         )
         self._conn.autocommit = False
