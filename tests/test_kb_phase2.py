@@ -58,12 +58,30 @@ from kb_ingest_rules import Candidate  # noqa: E402
 # exports HERMES_HOME (e.g. /root/.hermes/profiles/coder), and that config
 # HAS a kb shared_memory section -> enabled -> the zero-hit / falsified /
 # decayed cases emit the cross-device referral hint and break the
-# "must be {}" assertions below. Point the loader at a non-existent home
-# so the module resolves None (no shared_memory config) in unit tests.
+# "must be {}" assertions below.
+#
+# conftest strips HERMES_HOME / HERMES_CONFIG / HERMES_PROFILE before
+# collection; re-pin them for this module so the loader resolves None
+# (no shared_memory config) regardless of host or conftest evolution,
+# WITHOUT leaking into later test modules (the module-level setenv below
+# was a persistent os.environ write — later files saw
+# HERMES_HOME=/nonexistent-kb-test-home). This file's 29 tests all run
+# within these class-scoped autouse fixtures.
 import os
-os.environ["HERMES_HOME"] = "/nonexistent-kb-test-home"
-os.environ["HERMES_CONFIG"] = ""
-os.environ["HERMES_PROFILE"] = ""
+import pytest
+
+_KB_PHASE2_ENV = {k: os.environ.get(k, "") for k in
+                 ("HERMES_HOME", "HERMES_CONFIG", "HERMES_PROFILE")}
+
+
+@pytest.fixture(autouse=True)
+def _kb_phase2_isolated_home():
+    os.environ["HERMES_HOME"] = "/nonexistent-kb-test-home"
+    os.environ["HERMES_CONFIG"] = ""
+    os.environ["HERMES_PROFILE"] = ""
+    yield
+    for _k, _v in _KB_PHASE2_ENV.items():
+        os.environ[_k] = _v
 
 
 def _load_pkl_docs(path: Path) -> list:
