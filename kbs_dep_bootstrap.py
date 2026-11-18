@@ -214,10 +214,23 @@ def ensure_pg_dep_paths() -> None:
 # raises, the KB face just stays off until the deps land.
 # ---------------------------------------------------------------------------
 
+# Platform-aware lock set: POSIX ships the stdlib fcntl (kernel flock(2));
+# Windows has none — the _fcntl module's filelock-based fallback covers it.
+# The auto-installer below must install whatever the active lock face needs,
+# otherwise the platform's fallback silently no-ops and the last-writer-wins
+# hole reopens (the Windows analogue of the "filelock missing -> no-op flock"
+# regression caught by test_multiproc on a POSIX host without filelock).
+if sys.platform == "win32":
+    _LOCK_DEP = "filelock"
+else:
+    _LOCK_DEP = None
+
 KB_DEP_REQUIRED = ("jieba", "rank_bm25")   # hard: the two-layer search core
 KB_DEP_OPTIONAL = ("psycopg2-binary",)     # soft: imports as 'psycopg2' (the
                                            # shared-memory face; -binary =
                                            # a wheel, no pg_config/C build)
+if _LOCK_DEP:
+    KB_DEP_OPTIONAL = KB_DEP_OPTIONAL + (_LOCK_DEP,)
 INSTALL_COOLDOWN_S = 6 * 3600               # re-attempt pip at most every 6h
 
 
