@@ -40,6 +40,28 @@ def _get_filelock(path: object = None):
         return None
 
 
+def flock_posix(fd: int, flags: int) -> None:
+    """POSIX-only flock(2) on the descriptor.
+
+    Cross-process exclusive mutex (kernel-enforced). Windows hosts have no
+    POSIX fcntl — the filelock-backed :func:`flock` shim is the fallback
+    there. The ``fcntl`` module is imported inside the call so module
+    import stays clean on non-POSIX interpreters.
+    """
+    if flags & LOCK_NB:
+        import errno
+        import fcntl as _fcntl_mod
+        import os as _os
+        try:
+            _fcntl_mod.flock(fd, _fcntl_mod.LOCK_EX | _fcntl_mod.LOCK_NB)
+        except OSError as exc:
+            if exc.errno != errno.EAGAIN:
+                raise
+        return
+    import fcntl as _fcntl_mod
+    _fcntl_mod.flock(fd, flags)
+
+
 def flock(fd: int, flags: int) -> None:
     """Advisory lock on fd, mimicking fcntl.flock on Linux.
 

@@ -29,7 +29,7 @@ import sys, json
 from pathlib import Path
 root, data_dir, docs_json = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, root)
-import dep_bootstrap
+import kbs_dep_bootstrap as dep_bootstrap
 dep_bootstrap.ensure_kb_dep_paths()
 from kb_service import KbSearchService
 KbSearchService(Path(data_dir)).ingest(json.loads(docs_json))

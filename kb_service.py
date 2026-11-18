@@ -70,10 +70,20 @@ from staging import StagingStore
 # same pattern kb_ingest_hook uses.
 import types
 try:
-    from ._fcntl import flock, LOCK_SH, LOCK_EX, LOCK_NB, LOCK_UN
+    from ._fcntl import flock, flock_posix, LOCK_SH, LOCK_EX, LOCK_NB, LOCK_UN
 except ImportError:
-    from _fcntl import flock, LOCK_SH, LOCK_EX, LOCK_NB, LOCK_UN
-fcntl = types.SimpleNamespace(flock=flock, LOCK_SH=LOCK_SH, LOCK_EX=LOCK_EX, LOCK_NB=LOCK_NB, LOCK_UN=LOCK_UN)
+    from _fcntl import flock, flock_posix, LOCK_SH, LOCK_EX, LOCK_NB, LOCK_UN
+
+# POSIX hosts: prefer the kernel's flock(2) (per-descriptor, real cross-
+# process mutex). The filelock shim only matters on Windows (no stdlib
+# fcntl), so on POSIX we use flock_posix; elsewhere keep the filelock-backed
+# flock fallback.
+import sys as _sys
+if _sys.platform == "win32":
+    _lock_flock = flock
+else:
+    _lock_flock = flock_posix
+fcntl = types.SimpleNamespace(flock=_lock_flock, LOCK_SH=LOCK_SH, LOCK_EX=LOCK_EX, LOCK_NB=LOCK_NB, LOCK_UN=LOCK_UN)
 
 # Lock + write-epoch marker live in the DATA dir (deploy-created), not the repo.
 _LOCK_NAME = "lock"
